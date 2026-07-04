@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	CarPlay: after Apple approves your "EV charging app" CarPlay entitlement
+	request (see README step 5), uncomment the two lines below. Building with
+	them BEFORE approval makes code signing fail, so they ship commented out.
+
+	<key>com.apple.developer.carplay-charging</key>
+	<true/>
+	-->
+</dict>
+</plist>
