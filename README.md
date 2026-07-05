@@ -13,7 +13,7 @@ No third-party code, no server, no subscription. Credentials stay in the phone's
 
 ### 1. Get a free NREL API key (charger database)
 
-Sign up at <https://developer.nrel.gov/signup/> — the key arrives instantly by email. This is the US Department of Energy charging-station database (the same underlying data ABRP uses for US chargers). You'll paste the key into the app's Settings tab after install — no build configuration needed.
+Sign up at <https://developer.nlr.gov/signup/> (the API portal formerly at developer.nrel.gov) — the key arrives instantly by email. This is the US Department of Energy charging-station database (the same underlying data ABRP uses for US chargers). You'll paste the key into the app's Settings tab after install — no build configuration needed.
 
 ### 2. Open and sign the project
 

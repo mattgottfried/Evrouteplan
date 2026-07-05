@@ -62,7 +62,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Charging Station Data")
                 } footer: {
-                    Text("Free instant key from developer.nrel.gov/signup — powers the charger database (same source ABRP uses for US chargers).")
+                    Text("Free instant key from developer.nlr.gov/signup — powers the US DOE charger database (same source ABRP uses for US chargers). Keys issued on the old developer.nrel.gov domain keep working.")
                 }
 
                 if appState.accountState == .signedIn {

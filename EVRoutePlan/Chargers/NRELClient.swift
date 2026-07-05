@@ -9,7 +9,7 @@ enum NRELError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingAPIKey:
-            return "No NREL API key set. Get a free key at developer.nrel.gov/signup and paste it in Settings."
+            return "No NREL API key set. Get a free key at developer.nlr.gov/signup and paste it in Settings."
         case .httpError(let code):
             return code == 403
                 ? "NREL rejected the API key (HTTP 403). Check the key in Settings."
@@ -50,23 +50,43 @@ actor NRELClient {
         let cacheKey = String(format: "%.1f,%.1f,%.0f", coordinate.latitude, coordinate.longitude, radiusMiles)
         if let cached = cache[cacheKey] { return cached }
 
-        var components = URLComponents(string: "https://developer.nrel.gov/api/alt-fuel-stations/v1/nearest.json")!
-        components.queryItems = [
-            URLQueryItem(name: "api_key", value: apiKey),
-            URLQueryItem(name: "latitude", value: String(coordinate.latitude)),
-            URLQueryItem(name: "longitude", value: String(coordinate.longitude)),
-            URLQueryItem(name: "radius", value: String(radiusMiles)),
-            URLQueryItem(name: "fuel_type", value: "ELEC"),
-            URLQueryItem(name: "ev_charging_level", value: "dc_fast"),
-            URLQueryItem(name: "ev_connector_type", value: "J1772COMBO,TESLA"),
-            URLQueryItem(name: "status", value: "E"),
-            URLQueryItem(name: "access", value: "public"),
-            URLQueryItem(name: "limit", value: String(limit)),
-        ]
+        // The API portal moved from developer.nrel.gov to developer.nlr.gov
+        // (May 2026). Try the current domain first; fall back to the legacy
+        // one so lookups survive the transition in either direction. Both
+        // are CISA-verified .gov domains.
+        let hosts = ["developer.nlr.gov", "developer.nrel.gov"]
+        var data = Data()
+        var succeeded = false
+        var lastError: Error = NRELError.malformedResponse
 
-        let (data, response) = try await session.data(from: components.url!)
-        guard let http = response as? HTTPURLResponse else { throw NRELError.malformedResponse }
-        guard (200..<300).contains(http.statusCode) else { throw NRELError.httpError(http.statusCode) }
+        for host in hosts {
+            var components = URLComponents(string: "https://\(host)/api/alt-fuel-stations/v1/nearest.json")!
+            components.queryItems = [
+                URLQueryItem(name: "api_key", value: apiKey),
+                URLQueryItem(name: "latitude", value: String(coordinate.latitude)),
+                URLQueryItem(name: "longitude", value: String(coordinate.longitude)),
+                URLQueryItem(name: "radius", value: String(radiusMiles)),
+                URLQueryItem(name: "fuel_type", value: "ELEC"),
+                URLQueryItem(name: "ev_charging_level", value: "dc_fast"),
+                URLQueryItem(name: "ev_connector_type", value: "J1772COMBO,TESLA"),
+                URLQueryItem(name: "status", value: "E"),
+                URLQueryItem(name: "access", value: "public"),
+                URLQueryItem(name: "limit", value: String(limit)),
+            ]
+            do {
+                let (body, response) = try await session.data(from: components.url!)
+                guard let http = response as? HTTPURLResponse else { throw NRELError.malformedResponse }
+                guard (200..<300).contains(http.statusCode) else {
+                    throw NRELError.httpError(http.statusCode)
+                }
+                data = body
+                succeeded = true
+                break
+            } catch {
+                lastError = error  // unreachable host or error — try the next
+            }
+        }
+        guard succeeded else { throw lastError }
 
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw NRELError.malformedResponse
