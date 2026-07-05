@@ -1,6 +1,15 @@
 import CoreLocation
 import Foundation
 
+/// A destination the user has planned to before, for one-tap replanning.
+struct RecentDestination: Codable, Identifiable, Equatable, Sendable {
+    var id = UUID()
+    let name: String
+    let subtitle: String
+    let latitude: Double
+    let longitude: Double
+}
+
 struct ChargingStop: Identifiable, Sendable {
     let id = UUID()
     let station: ChargingStation

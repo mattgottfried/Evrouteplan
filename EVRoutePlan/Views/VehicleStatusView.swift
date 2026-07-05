@@ -1,21 +1,26 @@
+import CoreLocation
+import MapKit
 import SwiftUI
 
 struct VehicleStatusView: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
-        NavigationStack {
-            Group {
-                switch appState.accountState {
-                case .signedOut:
-                    SignInView()
-                case .signingIn:
-                    ProgressView("Signing in to BlueLink…")
-                case .signedIn:
-                    StatusDashboard()
-                }
+        switch appState.accountState {
+        case .signedOut:
+            NavigationStack {
+                SignInView()
+                    .navigationTitle("My Car")
             }
-            .navigationTitle(appState.vehicle?.nickname ?? "My Car")
+        case .signingIn:
+            VStack(spacing: 16) {
+                ProgressView()
+                Text("Signing in to BlueLink…")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .signedIn:
+            MapDashboard()
         }
     }
 }
@@ -31,9 +36,20 @@ private struct SignInView: View {
     var body: some View {
         Form {
             Section {
-                Text("Sign in with your MyHyundai / BlueLink account — the same one BetterBlue uses. Credentials are stored only in this phone's Keychain.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                VStack(spacing: 12) {
+                    Image(systemName: "bolt.car.fill")
+                        .font(.system(size: 52))
+                        .foregroundStyle(.tint)
+                    Text("Connect your Ioniq 5")
+                        .font(.title3.bold())
+                    Text("Sign in with your MyHyundai / BlueLink account. Credentials never leave this phone — they're stored in the Keychain and sent only to Hyundai.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .listRowBackground(Color.clear)
             }
             Section("BlueLink Account") {
                 TextField("Email", text: $username)
@@ -48,191 +64,301 @@ private struct SignInView: View {
             }
             if let error = appState.lastError {
                 Section {
-                    Text(error).foregroundStyle(.red).font(.footnote)
+                    ErrorBanner(message: error)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
                 }
             }
             Section {
-                Button("Sign In") {
+                Button {
                     Task {
                         await appState.signIn(username: username, password: password, pin: pin)
                     }
+                } label: {
+                    Text("Sign In")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
                 .disabled(username.isEmpty || password.isEmpty)
+                .listRowInsets(EdgeInsets())
+                .listRowBackground(Color.clear)
             }
         }
     }
 }
 
-// MARK: - Dashboard
+// MARK: - Map dashboard (BetterBlue-style: full-screen map + glass cards)
 
-private struct StatusDashboard: View {
+private struct MapDashboard: View {
     @Environment(AppState.self) private var appState
+    @State private var camera: MapCameraPosition = .automatic
 
     private var status: BlueLinkStatus? { appState.status }
 
+    private var carCoordinate: CLLocationCoordinate2D? {
+        guard let lat = status?.latitude, let lon = status?.longitude else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+
     var body: some View {
-        List {
-            batterySection
-            carSection
-            commandSection
-            if let error = appState.lastError {
-                Section {
-                    Text(error).foregroundStyle(.red).font(.footnote)
-                }
-            }
-        }
-        .refreshable { await appState.refreshStatus(force: false) }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    Task { await appState.refreshStatus(force: true) }
-                } label: {
-                    if appState.isRefreshingStatus {
-                        ProgressView()
-                    } else {
-                        Label("Wake Car", systemImage: "antenna.radiowaves.left.and.right")
+        ZStack(alignment: .bottom) {
+            Map(position: $camera) {
+                if let coord = carCoordinate {
+                    Annotation(appState.vehicle?.nickname ?? "Ioniq 5", coordinate: coord) {
+                        carMarker
                     }
                 }
-                .disabled(appState.isRefreshingStatus)
+                UserAnnotation()
             }
+            .ignoresSafeArea()
+
+            VStack(spacing: 8) {
+                if let error = appState.lastError {
+                    ErrorBanner(message: error)
+                }
+                if hasWarnings { warningsPill }
+                titlePill
+                rangeCard
+                chargeButton
+                controlsRow
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 8)
         }
         .task {
             if appState.status == nil {
                 await appState.refreshStatus(force: false)
             }
+            centerOnCar()
+        }
+        .onChange(of: status?.latitude) {
+            centerOnCar()
         }
     }
 
-    private var batterySection: some View {
-        Section("Battery") {
-            HStack(alignment: .firstTextBaseline) {
-                Image(systemName: batterySymbol)
-                    .font(.system(size: 40))
-                    .foregroundStyle(batteryColor)
+    private func centerOnCar() {
+        guard let coord = carCoordinate else { return }
+        // Offset south so the marker floats above the card stack.
+        let center = CLLocationCoordinate2D(latitude: coord.latitude - 0.0022, longitude: coord.longitude)
+        withAnimation(.easeInOut(duration: 0.8)) {
+            camera = .region(MKCoordinateRegion(
+                center: center,
+                span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+            ))
+        }
+    }
+
+    private var carMarker: some View {
+        ZStack {
+            Circle()
+                .fill(.background)
+                .frame(width: 38, height: 38)
+                .shadow(radius: 3)
+            Image(systemName: "bolt.car.fill")
+                .font(.body)
+                .foregroundStyle(.tint)
+        }
+    }
+
+    // MARK: Title pill
+
+    private var titlePill: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(appState.vehicle?.nickname ?? "My Ioniq 5")
+                    .font(.headline)
+                if let reported = status?.reportedAt {
+                    Text("Updated \(Format.relative(reported))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if appState.isRefreshingStatus {
+                ProgressView()
+            } else {
+                Button {
+                    Task { await appState.refreshStatus(force: false) }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.body.weight(.medium))
+                }
+                Button {
+                    Task { await appState.refreshStatus(force: true) }
+                } label: {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.body.weight(.medium))
+                }
+                .help("Wake the car for a live reading")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .glassCard()
+    }
+
+    // MARK: Range card
+
+    private var rangeCard: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: status?.isCharging == true ? "bolt.fill" : "bolt.car.fill")
+                    .font(.title2)
+                    .foregroundStyle(status?.isCharging == true ? .green : .primary)
+                    .symbolEffect(.pulse, isActive: status?.isCharging == true)
+                    .frame(width: 28)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(status?.socPercent.map { "\(Int($0))%" } ?? "—")
-                        .font(.system(size: 44, weight: .bold, design: .rounded))
-                    if let range = status?.rangeMiles {
-                        Text("\(Int(range)) mi range")
-                            .foregroundStyle(.secondary)
-                    }
+                    Text("EV Range")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(status?.rangeMiles.map { "\(Int($0)) mi" } ?? "—")
+                        .font(.title3.weight(.semibold))
+                        .contentTransition(.numericText())
                 }
                 Spacer()
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text("Battery")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(status?.socPercent.map { "\(Int($0))%" } ?? "—")
+                        .font(.title3.weight(.semibold))
+                        .contentTransition(.numericText())
+                }
             }
-            .padding(.vertical, 4)
+            BatteryBar(
+                percent: Int(status?.socPercent ?? 0),
+                isCharging: status?.isCharging == true,
+                limitPercent: status?.dcChargeLimit,
+                overlayText: chargeOverlayText
+            )
+            HStack {
+                miniStat("minus.plus.batteryblock.fill",
+                         status?.twelveVoltPercent.map { "12V \(Int($0))%" } ?? "12V —")
+                Spacer()
+                miniStat("gauge.with.needle",
+                         status?.odometerMiles.map { Format.miles($0) } ?? "— mi")
+                Spacer()
+                miniStat(status?.isPluggedIn == true ? "powerplug.fill" : "powerplug",
+                         status?.isPluggedIn == true ? "Plugged in" : "Unplugged")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding()
+        .glassCard()
+    }
 
-            if status?.isCharging == true {
-                LabeledContent("Charging", value: chargingDetail)
-            } else if status?.isPluggedIn == true {
-                LabeledContent("Plugged in", value: "not charging")
-            }
-            if let dc = status?.dcChargeLimit, let ac = status?.acChargeLimit {
-                LabeledContent("Charge limits", value: "DC \(dc)% · AC \(ac)%")
-            }
-            if let reported = status?.reportedAt {
-                LabeledContent("Car reported", value: Format.relative(reported))
-            }
+    private var chargeOverlayText: String? {
+        guard status?.isCharging == true else { return nil }
+        guard let minutes = status?.minutesToTargetSOC, minutes > 0 else { return "Charging" }
+        if let limit = status?.dcChargeLimit {
+            return "\(Format.minutes(Double(minutes))) to \(limit)%"
+        }
+        return "\(Format.minutes(Double(minutes))) left"
+    }
+
+    private func miniStat(_ icon: String, _ text: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+            Text(text)
         }
     }
 
-    private var chargingDetail: String {
-        if let minutes = status?.minutesToTargetSOC, minutes > 0 {
-            return "\(Format.minutes(Double(minutes))) to limit"
-        }
-        return "in progress"
+    // MARK: Warnings
+
+    private var hasWarnings: Bool {
+        status?.tirePressureWarning == true || status?.anyDoorOpen == true
     }
 
-    private var batterySymbol: String {
-        if status?.isCharging == true { return "bolt.batteryblock.fill" }
-        guard let soc = status?.socPercent else { return "battery.50percent" }
-        if soc <= 20 { return "battery.25percent" }
-        if soc <= 60 { return "battery.50percent" }
-        return "battery.100percent"
-    }
-
-    private var batteryColor: Color {
-        if status?.isCharging == true { return .green }
-        guard let soc = status?.socPercent else { return .secondary }
-        if soc <= 20 { return .red }
-        if soc <= 40 { return .orange }
-        return .green
-    }
-
-    private var carSection: some View {
-        Section("Vehicle") {
-            LabeledContent("Doors", value: doorText)
-            if let climate = status?.climateOn {
-                LabeledContent("Climate", value: climate ? "On" : "Off")
-            }
-            if let twelveV = status?.twelveVoltPercent {
-                LabeledContent("12 V battery", value: "\(Int(twelveV))%")
-            }
-            if let odometer = status?.odometerMiles {
-                LabeledContent("Odometer", value: Format.miles(odometer))
-            }
+    private var warningsPill: some View {
+        VStack(alignment: .leading, spacing: 6) {
             if status?.tirePressureWarning == true {
                 Label("Tire pressure warning", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
             }
             if status?.anyDoorOpen == true {
                 Label("A door, hood, or trunk is open", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
+            }
+        }
+        .font(.footnote.weight(.medium))
+        .foregroundStyle(.orange)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard()
+    }
+
+    // MARK: Contextual charge button (only when plugged in)
+
+    @ViewBuilder
+    private var chargeButton: some View {
+        if status?.isCharging == true {
+            glassButton("Stop Charging", icon: "bolt.slash.fill", tint: .red) { client, vehicle in
+                try await client.stopCharge(vehicle)
+            }
+        } else if status?.isPluggedIn == true {
+            glassButton("Start Charging", icon: "bolt.fill", tint: .green) { client, vehicle in
+                try await client.startCharge(vehicle)
             }
         }
     }
 
-    private var doorText: String {
-        guard let locked = status?.isLocked else { return "—" }
-        return locked ? "Locked" : "Unlocked"
-    }
+    // MARK: Lock + climate
 
-    private var commandSection: some View {
-        Section("Remote") {
-            if let busy = appState.busyCommand {
-                HStack {
-                    ProgressView()
-                    Text(busy).padding(.leading, 8).foregroundStyle(.secondary)
-                }
-            }
-            HStack {
-                commandButton("Lock", "lock.fill") { client, vehicle in
+    private var controlsRow: some View {
+        VStack(spacing: 8) {
+            if status?.isLocked == false {
+                glassButton("Lock Doors", icon: "lock.open.fill", tint: .orange) { client, vehicle in
                     try await client.lock(vehicle)
                 }
-                commandButton("Unlock", "lock.open.fill") { client, vehicle in
+            } else {
+                glassButton("Unlock Doors", icon: "lock.fill", tint: .green) { client, vehicle in
                     try await client.unlock(vehicle)
                 }
             }
-            HStack {
-                commandButton("Climate On", "fan.fill") { client, vehicle in
-                    try await client.startClimate(vehicle, tempF: 70, defrost: false)
-                }
-                commandButton("Climate Off", "fan.slash.fill") { client, vehicle in
+            if status?.climateOn == true {
+                glassButton("Stop Climate", icon: "fan.fill", tint: .teal) { client, vehicle in
                     try await client.stopClimate(vehicle)
                 }
-            }
-            HStack {
-                commandButton("Start Charge", "bolt.fill") { client, vehicle in
-                    try await client.startCharge(vehicle)
-                }
-                commandButton("Stop Charge", "bolt.slash.fill") { client, vehicle in
-                    try await client.stopCharge(vehicle)
+            } else {
+                glassButton("Start Climate (70°)", icon: "fan", tint: .teal) { client, vehicle in
+                    try await client.startClimate(vehicle, tempF: 70, defrost: false)
                 }
             }
         }
     }
 
-    private func commandButton(
+    private func glassButton(
         _ label: String,
-        _ symbol: String,
+        icon: String,
+        tint: Color,
         _ operation: @escaping (BlueLinkClient, BlueLinkVehicle) async throws -> Void
     ) -> some View {
         Button {
             Task { await appState.runCommand("\(label)…", operation) }
         } label: {
-            Label(label, systemImage: symbol)
-                .frame(maxWidth: .infinity)
+            HStack {
+                if appState.busyCommand == "\(label)…" {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: icon)
+                        .foregroundStyle(tint)
+                }
+                Text(appState.busyCommand == "\(label)…" ? "Sending to car…" : label)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(.primary)
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.plain)
+        .glassCard()
         .disabled(appState.busyCommand != nil)
+        .opacity(appState.busyCommand != nil && appState.busyCommand != "\(label)…" ? 0.5 : 1)
     }
 }

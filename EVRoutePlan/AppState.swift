@@ -42,6 +42,7 @@ final class AppState {
 
     private(set) var planState: PlanState = .idle
     private(set) var plannedRoute: PlannedRoute?
+    private(set) var recentDestinations: [RecentDestination] = []
 
     // MARK: - Settings (persisted)
 
@@ -77,6 +78,11 @@ final class AppState {
         let defaults = UserDefaults.standard
         manualSOCPercent = defaults.object(forKey: "manualSOCPercent") as? Double ?? 80
         nrelAPIKey = defaults.string(forKey: "nrelAPIKey") ?? ""
+
+        if let data = defaults.data(forKey: "recentDestinations"),
+           let recents = try? JSONDecoder().decode([RecentDestination].self, from: data) {
+            recentDestinations = recents
+        }
 
         var restored = PlannerSettings()
         if let trimRaw = defaults.string(forKey: "trim"),
@@ -194,8 +200,25 @@ final class AppState {
             )
             plannedRoute = route
             planState = .planned
+            rememberDestination(destination)
         } catch {
             planState = .failed(error.localizedDescription)
+        }
+    }
+
+    private func rememberDestination(_ destination: MKMapItem) {
+        let coord = destination.placemark.coordinate
+        let recent = RecentDestination(
+            name: destination.name ?? "Destination",
+            subtitle: destination.placemark.title ?? "",
+            latitude: coord.latitude,
+            longitude: coord.longitude
+        )
+        var recents = recentDestinations.filter { $0.name != recent.name }
+        recents.insert(recent, at: 0)
+        recentDestinations = Array(recents.prefix(6))
+        if let data = try? JSONEncoder().encode(recentDestinations) {
+            UserDefaults.standard.set(data, forKey: "recentDestinations")
         }
     }
 

@@ -13,7 +13,7 @@ struct RoutePlanView: View {
             Group {
                 switch appState.planState {
                 case .planning:
-                    ProgressView("Planning route and charging stops…")
+                    planningView
                 case .planned:
                     if let route = appState.plannedRoute {
                         PlannedRouteView(route: route)
@@ -26,62 +26,190 @@ struct RoutePlanView: View {
             .toolbar {
                 if appState.plannedRoute != nil {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("New Trip") { appState.clearPlan() }
+                        Button("New Trip") {
+                            appState.clearPlan()
+                            query = ""
+                            searchResults = []
+                        }
                     }
                 }
             }
+        }
+        .sensoryFeedback(.success, trigger: appState.plannedRoute?.plannedAt)
+    }
+
+    private var planningView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "bolt.car.fill")
+                .font(.system(size: 44))
+                .foregroundStyle(.tint)
+                .symbolEffect(.pulse)
+            Text("Planning your trip…")
+                .font(.headline)
+            Text("Routing, then sizing charging stops for your battery.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
         }
     }
 
     // MARK: - Destination search
 
     private var searchScreen: some View {
-        List {
-            Section {
-                HStack {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Where to?", text: $query)
-                        .autocorrectionDisabled()
-                        .onSubmit { Task { await search() } }
-                        .submitLabel(.search)
-                }
-            } footer: {
-                Text(startingSOCFooter)
-            }
+        ScrollView {
+            VStack(spacing: 14) {
+                searchField
+                batteryContextPill
 
-            if case .failed(let message) = appState.planState {
-                Section {
-                    Text(message).foregroundStyle(.red).font(.footnote)
+                if case .failed(let message) = appState.planState {
+                    ErrorBanner(message: message)
+                }
+
+                if isSearching {
+                    ProgressView().padding(.top, 24)
+                } else if !searchResults.isEmpty {
+                    resultsCard
+                } else if !appState.recentDestinations.isEmpty {
+                    recentsCard
+                } else {
+                    emptyState
                 }
             }
+            .padding(.horizontal)
+            .padding(.bottom, 24)
+        }
+        .background(Color(.systemGroupedBackground))
+        .scrollDismissesKeyboard(.immediately)
+    }
 
-            if isSearching {
-                ProgressView()
-            } else {
-                ForEach(searchResults, id: \.self) { item in
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Where to?", text: $query)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .onSubmit { Task { await search() } }
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                    searchResults = []
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var batteryContextPill: some View {
+        HStack(spacing: 8) {
+            Image(systemName: appState.hasLiveSOC ? "antenna.radiowaves.left.and.right" : "slider.horizontal.3")
+                .foregroundStyle(appState.hasLiveSOC ? .green : .orange)
+            Text(appState.hasLiveSOC
+                 ? "Live battery from car: \(Format.percent(appState.effectiveSOCFraction))"
+                 : "Manual battery: \(Format.percent(appState.effectiveSOCFraction)) — set in Settings")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private var resultsCard: some View {
+        Card {
+            VStack(spacing: 0) {
+                ForEach(Array(searchResults.enumerated()), id: \.offset) { index, item in
                     Button {
                         Task { await appState.planRoute(to: item) }
                     } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(item.name ?? "Unknown")
-                                .foregroundStyle(.primary)
-                            if let address = item.placemark.title {
-                                Text(address)
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
+                        HStack(spacing: 12) {
+                            Image(systemName: "mappin.circle.fill")
+                                .font(.title3)
+                                .foregroundStyle(.red)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.name ?? "Unknown")
+                                    .foregroundStyle(.primary)
+                                if let address = item.placemark.title {
+                                    Text(address)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
                             }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
                         }
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    if index < searchResults.count - 1 { Divider() }
                 }
             }
         }
     }
 
-    private var startingSOCFooter: String {
-        let soc = Format.percent(appState.effectiveSOCFraction)
-        return appState.hasLiveSOC
-            ? "Planning with live battery level from the car: \(soc)."
-            : "Planning with manual battery level \(soc) — set it in Settings, or sign in to BlueLink for live data."
+    private var recentsCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Recent")
+                    .font(.headline)
+                    .padding(.bottom, 6)
+                ForEach(appState.recentDestinations) { recent in
+                    Button {
+                        let placemark = MKPlacemark(coordinate: CLLocationCoordinate2D(
+                            latitude: recent.latitude, longitude: recent.longitude
+                        ))
+                        let item = MKMapItem(placemark: placemark)
+                        item.name = recent.name
+                        Task { await appState.planRoute(to: item) }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(recent.name)
+                                    .foregroundStyle(.primary)
+                                if !recent.subtitle.isEmpty {
+                                    Text(recent.subtitle)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.vertical, 10)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "map")
+                .font(.system(size: 40))
+                .foregroundStyle(.tertiary)
+            Text("Plan a road trip")
+                .font(.headline)
+            Text("Search a destination and EV Route Plan will place DC fast-charging stops sized for your Ioniq 5's battery — then hand navigation to Apple Maps and CarPlay.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(.top, 48)
+        .padding(.horizontal, 24)
     }
 
     private func search() async {
@@ -107,64 +235,31 @@ private struct PlannedRouteView: View {
     let route: PlannedRoute
 
     var body: some View {
-        List {
-            Section {
+        ScrollView {
+            VStack(spacing: 14) {
                 routeMap
-                    .frame(height: 260)
-                    .listRowInsets(EdgeInsets())
-            }
+                    .frame(height: 240)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
-            Section {
-                LabeledContent("Distance", value: Format.miles(route.totalMiles))
-                LabeledContent("Driving", value: Format.minutes(route.driveMinutes))
+                summaryCard
+
                 if route.needsCharging {
-                    LabeledContent("Charging", value: Format.minutes(route.chargeMinutes))
-                }
-                LabeledContent("Total", value: Format.minutes(route.totalMinutes))
-                LabeledContent("Arrival battery", value: Format.percent(route.arrivalSOC))
-            } header: {
-                Text(route.destinationName)
-            }
-
-            if route.needsCharging {
-                Section("Charging Stops") {
-                    ForEach(Array(route.stops.enumerated()), id: \.element.id) { index, stop in
-                        ChargingStopRow(index: index + 1, stop: stop)
+                    timelineCard
+                } else {
+                    Card {
+                        Label("No charging needed — you'll arrive with \(Format.percent(route.arrivalSOC)).",
+                              systemImage: "checkmark.circle.fill")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.green)
                     }
                 }
-            } else {
-                Section {
-                    Label("No charging needed — you can make it on the current battery.",
-                          systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                }
-            }
 
-            Section {
-                Button {
-                    navigateToNextStop()
-                } label: {
-                    Label(route.needsCharging ? "Navigate to First Charging Stop" : "Navigate to Destination",
-                          systemImage: "arrow.triangle.turn.up.right.circle.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-
-                if route.needsCharging {
-                    Button {
-                        openFullRouteInMaps()
-                    } label: {
-                        Label("Send Full Route to Apple Maps", systemImage: "map")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                }
-            } footer: {
-                if route.needsCharging {
-                    Text("Navigation shows on CarPlay via Apple Maps. \"Full route\" adds every charging stop as a waypoint in one go; or navigate stop-by-stop and tap the next stop while you charge.")
-                }
+                actionButtons
             }
+            .padding(.horizontal)
+            .padding(.bottom, 24)
         }
+        .background(Color(.systemGroupedBackground))
     }
 
     private var routeMap: some View {
@@ -183,8 +278,112 @@ private struct PlannedRouteView: View {
         .allowsHitTesting(false)
     }
 
-    /// Directions from the current location to the first waypoint — the
-    /// most reliable Apple Maps handoff (single destination).
+    private var summaryCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Image(systemName: "flag.checkered")
+                        .foregroundStyle(.tint)
+                    Text(route.destinationName)
+                        .font(.headline)
+                        .lineLimit(2)
+                }
+                HStack(spacing: 10) {
+                    StatTile(icon: "clock.fill", title: "Total time",
+                             value: Format.minutes(route.totalMinutes), tint: .blue)
+                    StatTile(icon: "road.lanes", title: "Distance",
+                             value: Format.miles(route.totalMiles), tint: .indigo)
+                    if route.needsCharging {
+                        StatTile(icon: "bolt.fill", title: "Charging",
+                                 value: Format.minutes(route.chargeMinutes), tint: .green)
+                    } else {
+                        StatTile(icon: "battery.75percent", title: "Arrive at",
+                                 value: Format.percent(route.arrivalSOC), tint: .green)
+                    }
+                }
+                if route.needsCharging {
+                    HStack {
+                        Label("\(route.stops.count) stop\(route.stops.count == 1 ? "" : "s")",
+                              systemImage: "bolt.circle.fill")
+                        Spacer()
+                        Label("Arrive at \(Format.percent(route.arrivalSOC))",
+                              systemImage: "battery.50percent")
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    // MARK: Timeline
+
+    private var timelineCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Charging Stops")
+                    .font(.headline)
+                    .padding(.bottom, 12)
+                ForEach(Array(route.stops.enumerated()), id: \.element.id) { index, stop in
+                    TimelineStopRow(index: index + 1, stop: stop, isLast: false)
+                }
+                destinationRow
+            }
+        }
+    }
+
+    private var destinationRow: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(spacing: 0) {
+                Image(systemName: "flag.checkered.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.red)
+            }
+            .frame(width: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(route.destinationName)
+                    .font(.subheadline.weight(.semibold))
+                Text("Arrive with \(Format.percent(route.arrivalSOC)) battery")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+
+    // MARK: Actions
+
+    private var actionButtons: some View {
+        VStack(spacing: 10) {
+            Button {
+                navigateToNextStop()
+            } label: {
+                Label(route.needsCharging ? "Navigate to First Charging Stop" : "Navigate to Destination",
+                      systemImage: "arrow.triangle.turn.up.right.circle.fill")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+
+            if route.needsCharging {
+                Button {
+                    openFullRouteInMaps()
+                } label: {
+                    Label("Send Full Route to Apple Maps", systemImage: "map")
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.bordered)
+
+                Text("Navigation shows on CarPlay via Apple Maps. \"Full route\" adds every charging stop as a waypoint; or go stop-by-stop and tap the next stop while you charge.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+    }
+
     private func navigateToNextStop() {
         let item: MKMapItem
         if let first = route.stops.first {
@@ -198,8 +397,7 @@ private struct PlannedRouteView: View {
     }
 
     /// Multi-stop handoff via the Apple Maps URL scheme
-    /// (daddr=A+to:B+to:C), which builds one route with every charging stop
-    /// as a waypoint. MKMapItem.openMaps doesn't support >2 waypoints.
+    /// (daddr=A+to:B+to:C). MKMapItem.openMaps doesn't support >2 waypoints.
     private func openFullRouteInMaps() {
         var waypoints = route.stops.map { stop in
             String(format: "%.5f,%.5f", stop.station.latitude, stop.station.longitude)
@@ -220,42 +418,73 @@ private struct PlannedRouteView: View {
     }
 }
 
-private struct ChargingStopRow: View {
+// MARK: - Timeline row
+
+private struct TimelineStopRow: View {
     let index: Int
     let stop: ChargingStop
+    let isLast: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(spacing: 2) {
                 Image(systemName: "\(index).circle.fill")
+                    .font(.title3)
                     .foregroundStyle(.green)
-                VStack(alignment: .leading) {
-                    Text(stop.station.name).font(.headline)
-                    Text("\(stop.station.network) · \(stop.station.dcFastCount) DC plugs\(stop.station.hasNACS ? " · NACS" : "")")
+                Rectangle()
+                    .fill(Color(.separator))
+                    .frame(width: 1)
+                    .frame(minHeight: 30)
+            }
+            .frame(width: 28)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(stop.station.name)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(2)
+                        HStack(spacing: 6) {
+                            Text(stop.station.network)
+                            if stop.station.hasNACS {
+                                Text("NACS")
+                                    .font(.caption2.weight(.bold))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Color.green.opacity(0.15))
+                                    .clipShape(Capsule())
+                                    .foregroundStyle(.green)
+                            }
+                            Text("\(stop.station.dcFastCount) plugs")
+                        }
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        let item = MKMapItem(placemark: MKPlacemark(coordinate: stop.station.coordinate))
+                        item.name = stop.station.name
+                        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
+                    } label: {
+                        Image(systemName: "arrow.triangle.turn.up.right.circle.fill")
+                            .font(.title2)
+                            .foregroundStyle(.tint)
+                    }
+                    .buttonStyle(.plain)
                 }
-            }
-            Text(stop.station.shortAddress)
+
+                SOCBar(fromSOC: stop.arrivalSOC, toSOC: stop.departureSOC)
+
+                HStack(spacing: 14) {
+                    Label(Format.miles(stop.legMiles), systemImage: "road.lanes")
+                    Label("\(Format.percent(stop.arrivalSOC)) → \(Format.percent(stop.departureSOC))",
+                          systemImage: "battery.50percent")
+                    Label(Format.minutes(stop.chargeMinutes), systemImage: "clock")
+                }
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            HStack(spacing: 16) {
-                Label(Format.miles(stop.legMiles), systemImage: "road.lanes")
-                Label("\(Format.percent(stop.arrivalSOC)) → \(Format.percent(stop.departureSOC))",
-                      systemImage: "battery.50percent")
-                Label(Format.minutes(stop.chargeMinutes), systemImage: "clock")
             }
-            .font(.caption)
-
-            Button {
-                let item = MKMapItem(placemark: MKPlacemark(coordinate: stop.station.coordinate))
-                item.name = stop.station.name
-                item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
-            } label: {
-                Label("Navigate to this stop", systemImage: "arrow.triangle.turn.up.right.circle")
-                    .font(.caption)
-            }
+            .padding(.bottom, 14)
         }
-        .padding(.vertical, 4)
     }
 }
