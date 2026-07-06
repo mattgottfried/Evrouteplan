@@ -2,6 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Shares vehicle status with the home-screen widget. Managed signing
+	     auto-provisions app groups; manual fallback documented in README. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.mattgottfried.EVRoutePlan</string>
+	</array>
 	<!-- Requires the WeatherKit capability enabled on the App ID
 	     (developer.apple.com → Identifiers → your app → Capabilities AND
 	     App Services tabs). See README. -->

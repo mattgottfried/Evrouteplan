@@ -373,6 +373,7 @@ struct SavedPlaceEditor: View {
     @State private var query = ""
     @State private var results: [MKMapItem] = []
     @State private var isSearching = false
+    @State private var searchService = DestinationSearchService()
 
     private var title: String { kind == .home ? "Home" : "Work" }
 
@@ -386,6 +387,10 @@ struct SavedPlaceEditor: View {
                             .autocorrectionDisabled()
                             .submitLabel(.search)
                             .onSubmit { Task { await search() } }
+                            .onChange(of: query) {
+                                results = []
+                                searchService.update(query: query)
+                            }
                     }
                     Button {
                         Task { await useCurrentLocation() }
@@ -395,6 +400,26 @@ struct SavedPlaceEditor: View {
                 }
                 if isSearching {
                     Section { ProgressView().frame(maxWidth: .infinity) }
+                }
+                if results.isEmpty, !searchService.completions.isEmpty {
+                    ForEach(searchService.completions, id: \.self) { completion in
+                        Button {
+                            Task {
+                                if let item = await searchService.resolve(completion) {
+                                    save(name: item.name ?? completion.title,
+                                         subtitle: item.placemark.title ?? completion.subtitle,
+                                         coordinate: item.placemark.coordinate)
+                                }
+                            }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(completion.title).foregroundStyle(.primary)
+                                if !completion.subtitle.isEmpty {
+                                    Text(completion.subtitle).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
                 }
                 ForEach(Array(results.enumerated()), id: \.offset) { _, item in
                     Button {
@@ -438,18 +463,8 @@ struct SavedPlaceEditor: View {
     }
 
     private func search() async {
-        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         isSearching = true
         defer { isSearching = false }
-        let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = query
-        if let location = await LocationProvider.shared.currentLocation() {
-            request.region = MKCoordinateRegion(
-                center: location.coordinate,
-                span: MKCoordinateSpan(latitudeDelta: 1, longitudeDelta: 1)
-            )
-        }
-        let response = try? await MKLocalSearch(request: request).start()
-        results = response?.mapItems ?? []
+        results = await searchService.fullSearch(query)
     }
 }

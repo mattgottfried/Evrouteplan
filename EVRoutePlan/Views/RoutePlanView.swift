@@ -139,6 +139,7 @@ private struct PlannerSheet: View {
     @State private var isSearching = false
     @State private var showOptions = false
     @State private var editingPlaceKind: SavedPlace.Kind?
+    @State private var searchService = DestinationSearchService()
 
     var body: some View {
         NavigationStack {
@@ -201,6 +202,28 @@ private struct PlannerSheet: View {
                     ErrorBanner(message: message)
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
+                }
+            }
+
+            if !query.isEmpty, searchResults.isEmpty, !searchService.completions.isEmpty {
+                Section("Suggestions") {
+                    ForEach(searchService.completions, id: \.self) { completion in
+                        Button {
+                            Task {
+                                if let item = await searchService.resolve(completion) {
+                                    query = ""
+                                    searchService.clear()
+                                    await appState.planRoute(to: item)
+                                }
+                            }
+                        } label: {
+                            destinationRow(
+                                icon: "mappin.circle.fill", iconColor: .red,
+                                title: completion.title,
+                                subtitle: completion.subtitle
+                            )
+                        }
+                    }
                 }
             }
 
@@ -278,10 +301,15 @@ private struct PlannerSheet: View {
                 .autocorrectionDisabled()
                 .submitLabel(.search)
                 .onSubmit { Task { await search() } }
+                .onChange(of: query) {
+                    searchResults = []
+                    searchService.update(query: query)
+                }
             if !query.isEmpty {
                 Button {
                     query = ""
                     searchResults = []
+                    searchService.clear()
                 } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
                 }
@@ -423,19 +451,9 @@ private struct PlannerSheet: View {
     }
 
     private func search() async {
-        guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         isSearching = true
         defer { isSearching = false }
-        let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = query
-        if let location = await LocationProvider.shared.currentLocation() {
-            request.region = MKCoordinateRegion(
-                center: location.coordinate,
-                span: MKCoordinateSpan(latitudeDelta: 4, longitudeDelta: 4)
-            )
-        }
-        let response = try? await MKLocalSearch(request: request).start()
-        searchResults = response?.mapItems ?? []
+        searchResults = await searchService.fullSearch(query)
     }
 }
 

@@ -38,6 +38,9 @@ struct ChargeSession: Codable, Identifiable, Equatable, Sendable {
     var startSOC: Double          // percent 0–100
     var endSOC: Double?           // percent, nil while in progress
     var batteryKWh: Double        // usable pack size at record time
+    /// Electricity rate stamped when the session closes; optional so older
+    /// persisted sessions keep decoding.
+    var dollarsPerKWh: Double?
 
     var isActive: Bool { endDate == nil }
 
@@ -46,8 +49,27 @@ struct ChargeSession: Codable, Identifiable, Equatable, Sendable {
         return max(endSOC - startSOC, 0) / 100.0 * batteryKWh
     }
 
+    var cost: Double? {
+        guard let kWh = estKWhAdded, let rate = dollarsPerKWh else { return nil }
+        return kWh * rate
+    }
+
     var durationMinutes: Double? {
         guard let endDate else { return nil }
         return endDate.timeIntervalSince(startDate) / 60.0
     }
+}
+
+/// A remote-climate preset shown as a chip on the My Car tab.
+struct ClimatePreset: Codable, Identifiable, Equatable, Sendable {
+    var id = UUID()
+    var name: String
+    var tempF: Int
+    var defrost: Bool
+
+    static let defaults: [ClimatePreset] = [
+        ClimatePreset(name: "Cool", tempF: 68, defrost: false),
+        ClimatePreset(name: "Comfort", tempF: 72, defrost: false),
+        ClimatePreset(name: "Defrost", tempF: 74, defrost: true),
+    ]
 }

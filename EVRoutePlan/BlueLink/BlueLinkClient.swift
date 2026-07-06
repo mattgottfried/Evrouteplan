@@ -346,4 +346,17 @@ actor BlueLinkClient {
         let headers = try await vehicleHeaders(for: vehicle)
         _ = try await send("POST", url: Self.apiBase + "evc/charge/stop", headers: headers)
     }
+
+    /// Sets the car's charge targets. plugType 0 = DC, 1 = AC.
+    func setChargeLimits(_ vehicle: BlueLinkVehicle, acPercent: Int, dcPercent: Int) async throws {
+        let headers = try await vehicleHeaders(for: vehicle)
+        let body: [String: Any] = [
+            "targetSOClist": [
+                ["plugType": 0, "targetSOClevel": dcPercent],
+                ["plugType": 1, "targetSOClevel": acPercent],
+            ]
+        ]
+        _ = try await send("POST", url: Self.apiBase + "evc/charge/targetsoc/set",
+                           headers: headers, jsonBody: body)
+    }
 }

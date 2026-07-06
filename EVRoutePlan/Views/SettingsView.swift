@@ -39,12 +39,20 @@ struct SettingsView: View {
                     Text("Reference consumption at 65 mph, 70°F — the EPA default for your trim is \(Int(appState.settings.trim.defaultWhPerMi)) Wh/mi (ABRP uses 257 for the Ioniq 5). Speed and weather scale it: higher cruise speed and extreme temperatures shrink planning range. Reserve, charge ceiling, and charger rules live in the Plan tab's Options.")
                 }
 
-                Section("History") {
+                Section {
                     NavigationLink {
                         HistoryView()
                     } label: {
                         Label("Drive & Charge History", systemImage: "clock.arrow.circlepath")
                     }
+                    sliderRow("Electricity rate",
+                              value: $appState.costPerKWh,
+                              range: 0.05...1.00, step: 0.01,
+                              display: String(format: "$%.2f/kWh", appState.costPerKWh))
+                } header: {
+                    Text("Charging")
+                } footer: {
+                    Text("Used to estimate session costs in history. Set it to your home rate; DC fast sessions will read low unless you bump it.")
                 }
 
                 Section {

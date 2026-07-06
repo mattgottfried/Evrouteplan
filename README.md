@@ -15,9 +15,13 @@ No third-party code, no server, no subscription. Credentials stay in the phone's
 
 Sign up at <https://developer.nlr.gov/signup/> (the API portal formerly at developer.nrel.gov) — the key arrives instantly by email. This is the US Department of Energy charging-station database (the same underlying data ABRP uses for US chargers). You'll paste the key into the app's Settings tab after install — no build configuration needed.
 
+Also included: Siri/Shortcuts commands ("Check my battery in EV Route Plan", lock, climate, charging), a home-screen and Lock Screen battery widget, climate presets, in-app charge-limit control, and charging cost tracking.
+
 ### 1b. Enable WeatherKit on your App ID (required before building)
 
 Weather-adjusted range uses Apple's WeatherKit (free, 500k calls/month with your developer account), and the entitlement ships **enabled**. Before building: [developer.apple.com](https://developer.apple.com/account) → Identifiers → your app ID → tick **WeatherKit** on **both** the Capabilities and App Services tabs, then save. Skipping this makes code signing fail with a provisioning error naming WeatherKit — that's the tell.
+
+The battery widget shares data through the App Group `group.com.mattgottfried.EVRoutePlan`. Managed signing normally registers app groups automatically; if an export fails naming the group, register it manually (Identifiers → App Groups → +) and enable it on both the app and widget identifiers.
 
 ### 2. Open and sign the project
 

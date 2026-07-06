@@ -5,6 +5,7 @@ import WidgetKit
 @main
 struct ChargingWidgetBundle: WidgetBundle {
     var body: some Widget {
+        BatteryWidget()
         ChargingLiveActivity()
     }
 }

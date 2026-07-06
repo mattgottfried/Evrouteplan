@@ -3,6 +3,7 @@ import Foundation
 import MapKit
 import Observation
 import WeatherKit
+import WidgetKit
 
 @MainActor
 @Observable
@@ -47,6 +48,7 @@ final class AppState {
     private(set) var savedPlaces: [SavedPlace] = []
     private(set) var savedPlans: [SavedPlan] = []
     private(set) var chargeSessions: [ChargeSession] = []
+    private(set) var climatePresets: [ClimatePreset] = ClimatePreset.defaults
     /// Ambient °F used for the last plan, for display. Nil = no adjustment.
     private(set) var lastPlanTempF: Double?
     /// One-shot per-trip battery override set from the Options sheet.
@@ -65,6 +67,11 @@ final class AppState {
 
     var nrelAPIKey: String {
         didSet { UserDefaults.standard.set(nrelAPIKey, forKey: "nrelAPIKey") }
+    }
+
+    /// Default electricity rate for charging cost estimates.
+    var costPerKWh: Double {
+        didSet { UserDefaults.standard.set(costPerKWh, forKey: "costPerKWh") }
     }
 
     /// SOC used for planning: per-trip override first, then live from the
@@ -88,6 +95,7 @@ final class AppState {
         let defaults = UserDefaults.standard
         manualSOCPercent = defaults.object(forKey: "manualSOCPercent") as? Double ?? 80
         nrelAPIKey = defaults.string(forKey: "nrelAPIKey") ?? ""
+        costPerKWh = defaults.object(forKey: "costPerKWh") as? Double ?? 0.36
 
         if let data = defaults.data(forKey: "recentDestinations"),
            let recents = try? JSONDecoder().decode([RecentDestination].self, from: data) {
@@ -104,6 +112,10 @@ final class AppState {
         if let data = defaults.data(forKey: "chargeSessions"),
            let sessions = try? JSONDecoder().decode([ChargeSession].self, from: data) {
             chargeSessions = sessions
+        }
+        if let data = defaults.data(forKey: "climatePresets"),
+           let presets = try? JSONDecoder().decode([ClimatePreset].self, from: data) {
+            climatePresets = presets
         }
 
         var restored = PlannerSettings()
@@ -200,6 +212,7 @@ final class AppState {
             }
             ChargingActivityController.sync(status: fresh, vehicleName: vehicle.nickname)
             recordChargeTransition(fresh)
+            publishSnapshot(fresh, vehicleName: vehicle.nickname)
         } catch {
             lastError = error.localizedDescription
         }
@@ -219,6 +232,7 @@ final class AppState {
         } else if !charging, let openIndex {
             chargeSessions[openIndex].endDate = fresh.reportedAt ?? Date()
             chargeSessions[openIndex].endSOC = fresh.socPercent
+            chargeSessions[openIndex].dollarsPerKWh = costPerKWh
         } else if charging, let openIndex {
             // Refresh mid-charge: keep the running end SOC current so an
             // abandoned session still shows a sane final value.
@@ -233,6 +247,31 @@ final class AppState {
     func deleteChargeSessions(at offsets: IndexSet) {
         chargeSessions.remove(atOffsets: offsets)
         persist(chargeSessions, key: "chargeSessions")
+    }
+
+    /// Feeds the home-screen widget through the App Group.
+    private func publishSnapshot(_ fresh: BlueLinkStatus, vehicleName: String) {
+        VehicleSnapshot(
+            socPercent: Int(fresh.socPercent ?? 0),
+            rangeMiles: fresh.rangeMiles.map { Int($0) },
+            isCharging: fresh.isCharging == true,
+            isPluggedIn: fresh.isPluggedIn == true,
+            vehicleName: vehicleName,
+            updatedAt: fresh.reportedAt ?? Date()
+        ).save()
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    // MARK: - Climate presets
+
+    func addClimatePreset(_ preset: ClimatePreset) {
+        climatePresets.append(preset)
+        persist(climatePresets, key: "climatePresets")
+    }
+
+    func deleteClimatePresets(at offsets: IndexSet) {
+        climatePresets.remove(atOffsets: offsets)
+        persist(climatePresets, key: "climatePresets")
     }
 
     /// Runs a remote command with busy-state bookkeeping, then re-reads status.

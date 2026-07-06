@@ -93,6 +93,8 @@ private struct SignInView: View {
 private struct MapDashboard: View {
     @Environment(AppState.self) private var appState
     @State private var camera: MapCameraPosition = .automatic
+    @State private var showChargeLimits = false
+    @State private var showPresetEditor = false
 
     private var status: BlueLinkStatus? { appState.status }
 
@@ -121,6 +123,7 @@ private struct MapDashboard: View {
                 titlePill
                 rangeCard
                 chargeButton
+                climateCard
                 controlsRow
             }
             .padding(.horizontal)
@@ -134,6 +137,14 @@ private struct MapDashboard: View {
         }
         .onChange(of: status?.latitude) {
             centerOnCar()
+        }
+        .sheet(isPresented: $showChargeLimits) {
+            ChargeLimitSheet()
+                .presentationDetents([.medium])
+        }
+        .sheet(isPresented: $showPresetEditor) {
+            ClimatePresetEditor()
+                .presentationDetents([.medium, .large])
         }
     }
 
@@ -303,7 +314,69 @@ private struct MapDashboard: View {
         }
     }
 
-    // MARK: Lock + climate
+    // MARK: Climate presets
+
+    private var climateCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Climate", systemImage: "fan.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(status?.climateOn == true ? .teal : .primary)
+                Spacer()
+                if status?.climateOn == true {
+                    Button("Stop") {
+                        Task {
+                            await appState.runCommand("Stopping climate…") { client, vehicle in
+                                try await client.stopClimate(vehicle)
+                            }
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                    .font(.caption.weight(.medium))
+                }
+                Button {
+                    showPresetEditor = true
+                } label: {
+                    Image(systemName: "gearshape")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(appState.climatePresets) { preset in
+                        Button {
+                            Task {
+                                await appState.runCommand("\(preset.name) \(preset.tempF)°…") { client, vehicle in
+                                    try await client.startClimate(vehicle, tempF: preset.tempF, defrost: preset.defrost)
+                                }
+                            }
+                        } label: {
+                            VStack(spacing: 2) {
+                                Text(preset.name)
+                                    .font(.subheadline.weight(.medium))
+                                Text("\(preset.tempF)°\(preset.defrost ? " · defrost" : "")")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color(.tertiarySystemFill))
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(appState.busyCommand != nil)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .glassCard()
+    }
+
+    // MARK: Lock + charge limits
 
     private var controlsRow: some View {
         VStack(spacing: 8) {
@@ -316,19 +389,37 @@ private struct MapDashboard: View {
                     try await client.unlock(vehicle)
                 }
             }
-            if status?.climateOn == true {
-                glassButton("Stop Climate", icon: "fan.fill", tint: .teal) { client, vehicle in
-                    try await client.stopClimate(vehicle)
+            Button {
+                showChargeLimits = true
+            } label: {
+                HStack {
+                    Image(systemName: "bolt.badge.checkmark")
+                        .foregroundStyle(.green)
+                    Text(chargeLimitLabel)
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
-            } else {
-                glassButton("Start Climate (70°)", icon: "fan", tint: .teal) { client, vehicle in
-                    try await client.startClimate(vehicle, tempF: 70, defrost: false)
-                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .glassCard()
         }
     }
 
-    private func glassButton(
+    private var chargeLimitLabel: String {
+        if let dc = status?.dcChargeLimit, let ac = status?.acChargeLimit {
+            return "Charge Limits · DC \(dc)% / AC \(ac)%"
+        }
+        return "Charge Limits"
+    }
+
+    fileprivate func glassButton(
         _ label: String,
         icon: String,
         tint: Color,
@@ -360,5 +451,120 @@ private struct MapDashboard: View {
         .glassCard()
         .disabled(appState.busyCommand != nil)
         .opacity(appState.busyCommand != nil && appState.busyCommand != "\(label)…" ? 0.5 : 1)
+    }
+}
+
+// MARK: - Charge limit sheet
+
+private struct ChargeLimitSheet: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.dismiss) private var dismiss
+    @State private var dcLimit: Double = 80
+    @State private var acLimit: Double = 80
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("DC fast charging")
+                            Spacer()
+                            Text("\(Int(dcLimit))%").foregroundStyle(.secondary)
+                        }
+                        Slider(value: $dcLimit, in: 50...100, step: 10)
+                    }
+                    VStack(alignment: .leading) {
+                        HStack {
+                            Text("AC / home charging")
+                            Spacer()
+                            Text("\(Int(acLimit))%").foregroundStyle(.secondary)
+                        }
+                        Slider(value: $acLimit, in: 50...100, step: 10)
+                    }
+                } footer: {
+                    Text("Sent to the car via BlueLink — same as setting it in the MyHyundai app. 80% is the battery-friendly daily limit.")
+                }
+                Section {
+                    Button {
+                        let ac = Int(acLimit)
+                        let dc = Int(dcLimit)
+                        Task {
+                            await appState.runCommand("Setting charge limits…") { client, vehicle in
+                                try await client.setChargeLimits(vehicle, acPercent: ac, dcPercent: dc)
+                            }
+                        }
+                        dismiss()
+                    } label: {
+                        Text("Apply to Car")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                }
+            }
+            .navigationTitle("Charge Limits")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .onAppear {
+                if let dc = appState.status?.dcChargeLimit { dcLimit = Double(dc) }
+                if let ac = appState.status?.acChargeLimit { acLimit = Double(ac) }
+            }
+        }
+    }
+}
+
+// MARK: - Climate preset editor
+
+private struct ClimatePresetEditor: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.dismiss) private var dismiss
+    @State private var newName = ""
+    @State private var newTemp = 70
+    @State private var newDefrost = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Presets") {
+                    ForEach(appState.climatePresets) { preset in
+                        HStack {
+                            Text(preset.name)
+                            Spacer()
+                            Text("\(preset.tempF)°\(preset.defrost ? " · defrost" : "")")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .onDelete { appState.deleteClimatePresets(at: $0) }
+                }
+                Section("New Preset") {
+                    TextField("Name", text: $newName)
+                    Stepper("Temperature: \(newTemp)°F", value: $newTemp, in: 62...82)
+                    Toggle("Defrost", isOn: $newDefrost)
+                    Button("Add Preset") {
+                        appState.addClimatePreset(ClimatePreset(
+                            name: newName.isEmpty ? "\(newTemp)°" : newName,
+                            tempF: newTemp,
+                            defrost: newDefrost
+                        ))
+                        newName = ""
+                    }
+                    .disabled(appState.climatePresets.count >= 6)
+                }
+            }
+            .navigationTitle("Climate Presets")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
     }
 }

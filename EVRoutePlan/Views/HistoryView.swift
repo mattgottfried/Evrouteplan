@@ -13,13 +13,37 @@ struct HistoryView: View {
                     description: Text("Sessions are recorded automatically whenever the app sees the car charging via BlueLink.")
                 )
             } else {
-                ForEach(appState.chargeSessions) { session in
-                    ChargeSessionRow(session: session)
+                monthSummary
+                Section("Sessions") {
+                    ForEach(appState.chargeSessions) { session in
+                        ChargeSessionRow(session: session)
+                    }
+                    .onDelete { appState.deleteChargeSessions(at: $0) }
                 }
-                .onDelete { appState.deleteChargeSessions(at: $0) }
             }
         }
         .navigationTitle("Charge History")
+    }
+
+    private var monthSummary: some View {
+        let calendar = Calendar.current
+        let thisMonth = appState.chargeSessions.filter {
+            calendar.isDate($0.startDate, equalTo: Date(), toGranularity: .month)
+        }
+        let totalKWh = thisMonth.compactMap(\.estKWhAdded).reduce(0, +)
+        let totalCost = thisMonth.compactMap(\.cost).reduce(0, +)
+
+        return Section("This Month") {
+            HStack(spacing: 10) {
+                StatTile(icon: "number", title: "Sessions",
+                         value: "\(thisMonth.count)", tint: .blue)
+                StatTile(icon: "bolt.fill", title: "Energy",
+                         value: String(format: "%.0f kWh", totalKWh), tint: .green)
+                StatTile(icon: "dollarsign.circle.fill", title: "Est. cost",
+                         value: String(format: "$%.2f", totalCost), tint: .orange)
+            }
+            .listRowSeparator(.hidden)
+        }
     }
 }
 
@@ -37,9 +61,16 @@ private struct ChargeSessionRow: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.green)
                 } else if let kWh = session.estKWhAdded {
-                    Text(String(format: "+%.1f kWh", kWh))
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.green)
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(String(format: "+%.1f kWh", kWh))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.green)
+                        if let cost = session.cost {
+                            Text(String(format: "≈ $%.2f", cost))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
             SOCBar(
