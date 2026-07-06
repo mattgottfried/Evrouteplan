@@ -2,6 +2,7 @@ import CoreLocation
 import Foundation
 import MapKit
 import Observation
+import WeatherKit
 
 @MainActor
 @Observable
@@ -43,6 +44,13 @@ final class AppState {
     private(set) var planState: PlanState = .idle
     private(set) var plannedRoute: PlannedRoute?
     private(set) var recentDestinations: [RecentDestination] = []
+    private(set) var savedPlaces: [SavedPlace] = []
+    private(set) var savedPlans: [SavedPlan] = []
+    private(set) var chargeSessions: [ChargeSession] = []
+    /// Ambient °F used for the last plan, for display. Nil = no adjustment.
+    private(set) var lastPlanTempF: Double?
+    /// One-shot per-trip battery override set from the Options sheet.
+    var departureSOCOverride: Double?
 
     // MARK: - Settings (persisted)
 
@@ -59,8 +67,10 @@ final class AppState {
         didSet { UserDefaults.standard.set(nrelAPIKey, forKey: "nrelAPIKey") }
     }
 
-    /// SOC used for planning: live from the car when we have it, else manual.
+    /// SOC used for planning: per-trip override first, then live from the
+    /// car, then the manual slider.
     var effectiveSOCFraction: Double {
+        if let override = departureSOCOverride { return override }
         if let live = status?.socFraction, let fetched = status?.fetchedAt,
            fetched.timeIntervalSinceNow > -3600 {
             return live
@@ -83,6 +93,18 @@ final class AppState {
            let recents = try? JSONDecoder().decode([RecentDestination].self, from: data) {
             recentDestinations = recents
         }
+        if let data = defaults.data(forKey: "savedPlaces"),
+           let places = try? JSONDecoder().decode([SavedPlace].self, from: data) {
+            savedPlaces = places
+        }
+        if let data = defaults.data(forKey: "savedPlans"),
+           let plans = try? JSONDecoder().decode([SavedPlan].self, from: data) {
+            savedPlans = plans
+        }
+        if let data = defaults.data(forKey: "chargeSessions"),
+           let sessions = try? JSONDecoder().decode([ChargeSession].self, from: data) {
+            chargeSessions = sessions
+        }
 
         var restored = PlannerSettings()
         if let trimRaw = defaults.string(forKey: "trim"),
@@ -91,8 +113,14 @@ final class AppState {
         }
         if let v = defaults.object(forKey: "reserveSOC") as? Double { restored.reserveSOC = v }
         if let v = defaults.object(forKey: "maxChargeSOC") as? Double { restored.maxChargeSOC = v }
-        if let v = defaults.object(forKey: "rangeFactor") as? Double { restored.rangeFactor = v }
         if let v = defaults.object(forKey: "corridorRadiusMiles") as? Double { restored.corridorRadiusMiles = v }
+        if let v = defaults.object(forKey: "referenceWhPerMi") as? Double { restored.referenceWhPerMi = v }
+        if let v = defaults.object(forKey: "maxSpeedMph") as? Double { restored.maxSpeedMph = v }
+        if let v = defaults.object(forKey: "weatherAdjustEnabled") as? Bool { restored.weatherAdjustEnabled = v }
+        if let v = defaults.object(forKey: "minChargerKW") as? Double { restored.minChargerKW = v }
+        if let v = defaults.object(forKey: "preferNACS") as? Bool { restored.preferNACS = v }
+        if let v = defaults.object(forKey: "avoidTolls") as? Bool { restored.avoidTolls = v }
+        if let v = defaults.object(forKey: "avoidHighways") as? Bool { restored.avoidHighways = v }
         settings = restored
 
         // Restore a previous BlueLink session, if any.
@@ -108,8 +136,20 @@ final class AppState {
         defaults.set(settings.trim.rawValue, forKey: "trim")
         defaults.set(settings.reserveSOC, forKey: "reserveSOC")
         defaults.set(settings.maxChargeSOC, forKey: "maxChargeSOC")
-        defaults.set(settings.rangeFactor, forKey: "rangeFactor")
         defaults.set(settings.corridorRadiusMiles, forKey: "corridorRadiusMiles")
+        defaults.set(settings.referenceWhPerMi, forKey: "referenceWhPerMi")
+        defaults.set(settings.maxSpeedMph, forKey: "maxSpeedMph")
+        defaults.set(settings.weatherAdjustEnabled, forKey: "weatherAdjustEnabled")
+        defaults.set(settings.minChargerKW, forKey: "minChargerKW")
+        defaults.set(settings.preferNACS, forKey: "preferNACS")
+        defaults.set(settings.avoidTolls, forKey: "avoidTolls")
+        defaults.set(settings.avoidHighways, forKey: "avoidHighways")
+    }
+
+    private func persist<T: Encodable>(_ value: T, key: String) {
+        if let data = try? JSONEncoder().encode(value) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
     }
 
     // MARK: - BlueLink actions
@@ -159,9 +199,40 @@ final class AppState {
                 manualSOCPercent = soc  // keep the fallback in sync with reality
             }
             ChargingActivityController.sync(status: fresh, vehicleName: vehicle.nickname)
+            recordChargeTransition(fresh)
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    /// Opens/closes charge-history sessions on charging state transitions.
+    private func recordChargeTransition(_ fresh: BlueLinkStatus) {
+        let charging = fresh.isCharging == true
+        let openIndex = chargeSessions.firstIndex(where: { $0.isActive })
+
+        if charging, openIndex == nil {
+            chargeSessions.insert(ChargeSession(
+                startDate: fresh.reportedAt ?? Date(),
+                startSOC: fresh.socPercent ?? manualSOCPercent,
+                batteryKWh: settings.trim.usableBatteryKWh
+            ), at: 0)
+        } else if !charging, let openIndex {
+            chargeSessions[openIndex].endDate = fresh.reportedAt ?? Date()
+            chargeSessions[openIndex].endSOC = fresh.socPercent
+        } else if charging, let openIndex {
+            // Refresh mid-charge: keep the running end SOC current so an
+            // abandoned session still shows a sane final value.
+            chargeSessions[openIndex].endSOC = fresh.socPercent
+        } else {
+            return
+        }
+        chargeSessions = Array(chargeSessions.prefix(100))
+        persist(chargeSessions, key: "chargeSessions")
+    }
+
+    func deleteChargeSessions(at offsets: IndexSet) {
+        chargeSessions.remove(atOffsets: offsets)
+        persist(chargeSessions, key: "chargeSessions")
     }
 
     /// Runs a remote command with busy-state bookkeeping, then re-reads status.
@@ -190,8 +261,9 @@ final class AppState {
             // Candidate origins, best first; the planner tries each until
             // Apple Maps produces a route.
             var origins: [MKMapItem] = []
-            if let location = await LocationProvider.shared.currentLocation() {
-                origins.append(MKMapItem(placemark: MKPlacemark(coordinate: location.coordinate)))
+            let currentLocation = await LocationProvider.shared.currentLocation()
+            if let currentLocation {
+                origins.append(MKMapItem(placemark: MKPlacemark(coordinate: currentLocation.coordinate)))
             }
             origins.append(MKMapItem.forCurrentLocation())
             if let lat = status?.latitude, let lon = status?.longitude {
@@ -199,11 +271,13 @@ final class AppState {
                     coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon)
                 )))
             }
+            let weatherMult = await weatherMultiplier(near: currentLocation)
             let route = try await planner.plan(
                 from: origins,
                 to: destination,
                 startSOC: effectiveSOCFraction,
-                settings: settings
+                settings: settings,
+                weatherMultiplier: weatherMult
             )
             plannedRoute = route
             planState = .planned
@@ -232,6 +306,76 @@ final class AppState {
     func clearPlan() {
         plannedRoute = nil
         planState = .idle
+        departureSOCOverride = nil
+    }
+
+    /// Ambient-temperature consumption multiplier via WeatherKit; 1.0 when
+    /// disabled, unavailable, or not yet entitled.
+    private func weatherMultiplier(near location: CLLocation?) async -> Double {
+        lastPlanTempF = nil
+        guard settings.weatherAdjustEnabled, let location else { return 1.0 }
+        guard let weather = try? await WeatherService.shared.weather(for: location, including: .current) else {
+            return 1.0
+        }
+        let tempF = weather.temperature.converted(to: .fahrenheit).value
+        lastPlanTempF = tempF
+        return PlannerSettings.weatherMultiplier(tempF: tempF)
+    }
+
+    // MARK: - Saved places & plans
+
+    func place(_ kind: SavedPlace.Kind) -> SavedPlace? {
+        savedPlaces.first { $0.kind == kind }
+    }
+
+    func setPlace(_ place: SavedPlace) {
+        savedPlaces.removeAll { $0.kind == place.kind }
+        savedPlaces.append(place)
+        persist(savedPlaces, key: "savedPlaces")
+    }
+
+    func removePlace(_ kind: SavedPlace.Kind) {
+        savedPlaces.removeAll { $0.kind == kind }
+        persist(savedPlaces, key: "savedPlaces")
+    }
+
+    /// Snapshots the current planned route into Saved Plans.
+    func saveCurrentPlan() {
+        guard let route = plannedRoute else { return }
+        let plan = SavedPlan(
+            destinationName: route.destinationName,
+            subtitle: "",
+            latitude: route.destinationCoordinate.latitude,
+            longitude: route.destinationCoordinate.longitude,
+            savedAt: Date(),
+            snapshotTotalMiles: route.totalMiles,
+            snapshotStopCount: route.stops.count,
+            snapshotTotalMinutes: route.totalMinutes
+        )
+        var plans = savedPlans.filter { $0.destinationName != plan.destinationName }
+        plans.insert(plan, at: 0)
+        savedPlans = Array(plans.prefix(20))
+        persist(savedPlans, key: "savedPlans")
+    }
+
+    func deleteSavedPlans(at offsets: IndexSet) {
+        savedPlans.remove(atOffsets: offsets)
+        persist(savedPlans, key: "savedPlans")
+    }
+
+    /// Plans a trip to a stored coordinate (saved place / plan / recent).
+    func planRoute(toName name: String, latitude: Double, longitude: Double) async {
+        let placemark = MKPlacemark(coordinate: CLLocationCoordinate2D(latitude: latitude, longitude: longitude))
+        let item = MKMapItem(placemark: placemark)
+        item.name = name
+        await planRoute(to: item)
+    }
+
+    // MARK: - Map chargers
+
+    /// Chargers for the plan map's pin layer.
+    func mapChargers(near center: CLLocationCoordinate2D, radiusMiles: Double) async -> [ChargingStation] {
+        (try? await nrel.fastChargers(near: center, radiusMiles: min(radiusMiles, 100), limit: 100)) ?? []
     }
 
     // MARK: - Nearby chargers (used by CarPlay and the map)

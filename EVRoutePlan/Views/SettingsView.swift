@@ -20,26 +20,31 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    sliderRow("Highway range factor",
-                              value: $appState.settings.rangeFactor,
-                              range: 0.6...1.0, step: 0.05,
-                              display: Format.percent(appState.settings.rangeFactor))
-                    sliderRow("Arrival reserve",
-                              value: $appState.settings.reserveSOC,
-                              range: 0.05...0.30, step: 0.05,
-                              display: Format.percent(appState.settings.reserveSOC))
-                    sliderRow("Charge up to",
-                              value: $appState.settings.maxChargeSOC,
-                              range: 0.60...1.0, step: 0.05,
-                              display: Format.percent(appState.settings.maxChargeSOC))
-                    sliderRow("Charger detour limit",
-                              value: $appState.settings.corridorRadiusMiles,
-                              range: 5...30, step: 1,
-                              display: Format.miles(appState.settings.corridorRadiusMiles))
+                    sliderRow("Consumption",
+                              value: whPerMiBinding,
+                              range: 200...400, step: 1,
+                              display: "\(Int(appState.settings.effectiveWhPerMi)) Wh/mi")
+                    sliderRow("Max cruise speed",
+                              value: $appState.settings.maxSpeedMph,
+                              range: 65...85, step: 1,
+                              display: "\(Int(appState.settings.maxSpeedMph)) mph")
+                    Toggle("Weather-adjusted range", isOn: $appState.settings.weatherAdjustEnabled)
+                    Button("Reset consumption to EPA default") {
+                        appState.settings.referenceWhPerMi = 0
+                    }
+                    .font(.subheadline)
                 } header: {
-                    Text("Route Planning")
+                    Text("Consumption Model")
                 } footer: {
-                    Text("Range factor accounts for highway speed and climate use — 85% of EPA is a good default. Charging above 80% is slow, so long trips usually plan faster with the cap at 80%.")
+                    Text("Reference consumption at 65 mph, 70°F — the EPA default for your trim is \(Int(appState.settings.trim.defaultWhPerMi)) Wh/mi (ABRP uses 257 for the Ioniq 5). Speed and weather scale it: higher cruise speed and extreme temperatures shrink planning range. Reserve, charge ceiling, and charger rules live in the Plan tab's Options.")
+                }
+
+                Section("History") {
+                    NavigationLink {
+                        HistoryView()
+                    } label: {
+                        Label("Drive & Charge History", systemImage: "clock.arrow.circlepath")
+                    }
                 }
 
                 Section {
@@ -85,6 +90,14 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
         }
+    }
+
+    /// 0 means "EPA default" in storage; expose the resolved value to the slider.
+    private var whPerMiBinding: Binding<Double> {
+        Binding(
+            get: { appState.settings.effectiveWhPerMi },
+            set: { appState.settings.referenceWhPerMi = $0 }
+        )
     }
 
     private var appVersion: String {

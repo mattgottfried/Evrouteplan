@@ -1,47 +1,180 @@
+import CoreLocation
 import MapKit
 import SwiftUI
 import UIKit
 
+/// ABRP-style map-first trip planner: full-screen map with charger pins and
+/// the planned route, driven by a persistent bottom sheet (search, Home/Work,
+/// vehicle card, saved plans, results).
 struct RoutePlanView: View {
     @Environment(AppState.self) private var appState
-    @State private var query = ""
-    @State private var searchResults: [MKMapItem] = []
-    @State private var isSearching = false
+
+    @State private var camera: MapCameraPosition = .userLocation(fallback: .automatic)
+    @State private var sheetShown = false
+    @State private var showChargers = true
+    @State private var hybridStyle = false
+    @State private var mapStations: [ChargingStation] = []
+    @State private var selectedStation: ChargingStation?
+    @State private var visibleRegion: MKCoordinateRegion?
 
     var body: some View {
-        NavigationStack {
-            Group {
-                switch appState.planState {
-                case .planning:
-                    planningView
-                case .planned:
-                    if let route = appState.plannedRoute {
-                        PlannedRouteView(route: route)
+        Map(position: $camera) {
+            UserAnnotation()
+
+            if showChargers, appState.plannedRoute == nil {
+                ForEach(mapStations) { station in
+                    Annotation(station.name, coordinate: station.coordinate) {
+                        chargerPin(station)
                     }
-                default:
-                    searchScreen
+                    .annotationTitles(.hidden)
                 }
             }
-            .navigationTitle("Trip Planner")
-            .toolbar {
-                if appState.plannedRoute != nil {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("New Trip") {
-                            appState.clearPlan()
-                            query = ""
-                            searchResults = []
-                        }
-                    }
+
+            if let route = appState.plannedRoute {
+                MapPolyline(coordinates: route.polylineCoordinates)
+                    .stroke(.blue, lineWidth: 5)
+                ForEach(Array(route.stops.enumerated()), id: \.element.id) { index, stop in
+                    Marker("\(index + 1). \(stop.station.name)",
+                           systemImage: "bolt.fill",
+                           coordinate: stop.station.coordinate)
+                        .tint(.green)
                 }
+                Marker(route.destinationName, coordinate: route.destinationCoordinate)
+                    .tint(.red)
             }
+        }
+        .mapStyle(hybridStyle ? .hybrid : .standard)
+        .mapControls {
+            MapUserLocationButton()
+            MapCompass()
+        }
+        .ignoresSafeArea()
+        .overlay(alignment: .topLeading) { mapButtons }
+        .onMapCameraChange(frequency: .onEnd) { context in
+            visibleRegion = context.region
+            Task { await refreshMapChargers(region: context.region) }
+        }
+        .onChange(of: appState.plannedRoute?.plannedAt) {
+            if appState.plannedRoute != nil {
+                withAnimation { camera = .automatic }  // frame the whole route
+            }
+        }
+        .onAppear { sheetShown = true }
+        .onDisappear { sheetShown = false }
+        .sheet(isPresented: $sheetShown) {
+            PlannerSheet(selectedStation: $selectedStation)
+                .presentationDetents([.height(220), .medium, .large])
+                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+                .presentationDragIndicator(.visible)
+                .interactiveDismissDisabled(true)
         }
         .sensoryFeedback(.success, trigger: appState.plannedRoute?.plannedAt)
     }
 
+    // MARK: Map chrome
+
+    private var mapButtons: some View {
+        VStack(spacing: 10) {
+            Button {
+                showChargers.toggle()
+            } label: {
+                Image(systemName: showChargers ? "bolt.fill" : "bolt.slash")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(showChargers ? .green : .secondary)
+                    .frame(width: 40, height: 40)
+            }
+            .glassCard(cornerRadius: 12)
+
+            Button {
+                hybridStyle.toggle()
+            } label: {
+                Image(systemName: hybridStyle ? "map.fill" : "globe.americas.fill")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 40, height: 40)
+            }
+            .glassCard(cornerRadius: 12)
+        }
+        .padding(.leading, 12)
+        .padding(.top, 4)
+    }
+
+    private func chargerPin(_ station: ChargingStation) -> some View {
+        Button {
+            selectedStation = station
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(station.hasNACS ? Color.green : Color.teal)
+                    .frame(width: 26, height: 26)
+                    .overlay(Circle().strokeBorder(.white, lineWidth: 2))
+                    .shadow(radius: 2)
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func refreshMapChargers(region: MKCoordinateRegion) async {
+        guard showChargers, appState.plannedRoute == nil else { return }
+        // Skip fetches when zoomed way out — pin soup and wasted quota.
+        guard region.span.latitudeDelta < 3.0 else {
+            mapStations = []
+            return
+        }
+        let radius = max(region.span.latitudeDelta * 69.0 / 2.0, 5.0)
+        mapStations = await appState.mapChargers(near: region.center, radiusMiles: radius)
+    }
+}
+
+// MARK: - Bottom sheet
+
+private struct PlannerSheet: View {
+    @Environment(AppState.self) private var appState
+    @Binding var selectedStation: ChargingStation?
+
+    @State private var query = ""
+    @State private var searchResults: [MKMapItem] = []
+    @State private var isSearching = false
+    @State private var showOptions = false
+    @State private var editingPlaceKind: SavedPlace.Kind?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if let station = selectedStation {
+                    ChargerDetailView(station: station) { selectedStation = nil }
+                } else {
+                    switch appState.planState {
+                    case .planning:
+                        planningView
+                    case .planned:
+                        if let route = appState.plannedRoute {
+                            PlanResultSheet(route: route)
+                        }
+                    default:
+                        idleContent
+                    }
+                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .sheet(isPresented: $showOptions) {
+            TripOptionsSheet()
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(item: $editingPlaceKind) { kind in
+            SavedPlaceEditor(kind: kind)
+                .presentationDetents([.medium, .large])
+        }
+    }
+
     private var planningView: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 14) {
+            Spacer()
             Image(systemName: "bolt.car.fill")
-                .font(.system(size: 44))
+                .font(.system(size: 40))
                 .foregroundStyle(.tint)
                 .symbolEffect(.pulse)
             Text("Planning your trip…")
@@ -49,43 +182,99 @@ struct RoutePlanView: View {
             Text("Routing, then sizing charging stops for your battery.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            Spacer()
         }
     }
 
-    // MARK: - Destination search
+    // MARK: Idle sheet (search / shortcuts / vehicle / saved)
 
-    private var searchScreen: some View {
-        ScrollView {
-            VStack(spacing: 14) {
+    private var idleContent: some View {
+        List {
+            Section {
                 searchField
-                batteryContextPill
+                shortcutChips
+                    .listRowSeparator(.hidden)
+            }
 
-                if case .failed(let message) = appState.planState {
+            if case .failed(let message) = appState.planState {
+                Section {
                     ErrorBanner(message: message)
-                }
-
-                if isSearching {
-                    ProgressView().padding(.top, 24)
-                } else if !searchResults.isEmpty {
-                    resultsCard
-                } else if !appState.recentDestinations.isEmpty {
-                    recentsCard
-                } else {
-                    emptyState
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
                 }
             }
-            .padding(.horizontal)
-            .padding(.bottom, 24)
+
+            if isSearching {
+                Section { ProgressView().frame(maxWidth: .infinity) }
+            } else if !searchResults.isEmpty {
+                Section("Results") {
+                    ForEach(Array(searchResults.enumerated()), id: \.offset) { _, item in
+                        Button {
+                            searchResults = []
+                            Task { await appState.planRoute(to: item) }
+                        } label: {
+                            destinationRow(
+                                icon: "mappin.circle.fill", iconColor: .red,
+                                title: item.name ?? "Unknown",
+                                subtitle: item.placemark.title ?? ""
+                            )
+                        }
+                    }
+                }
+            } else {
+                vehicleCard
+
+                if !appState.savedPlans.isEmpty {
+                    Section("Saved Plans") {
+                        ForEach(appState.savedPlans) { plan in
+                            Button {
+                                Task {
+                                    await appState.planRoute(
+                                        toName: plan.destinationName,
+                                        latitude: plan.latitude, longitude: plan.longitude
+                                    )
+                                }
+                            } label: {
+                                destinationRow(
+                                    icon: "heart.fill", iconColor: .pink,
+                                    title: plan.destinationName,
+                                    subtitle: "\(Format.miles(plan.snapshotTotalMiles)) · \(plan.snapshotStopCount) stops · \(Format.minutes(plan.snapshotTotalMinutes))"
+                                )
+                            }
+                        }
+                        .onDelete { appState.deleteSavedPlans(at: $0) }
+                    }
+                }
+
+                if !appState.recentDestinations.isEmpty {
+                    Section("Recent") {
+                        ForEach(appState.recentDestinations) { recent in
+                            Button {
+                                Task {
+                                    await appState.planRoute(
+                                        toName: recent.name,
+                                        latitude: recent.latitude, longitude: recent.longitude
+                                    )
+                                }
+                            } label: {
+                                destinationRow(
+                                    icon: "clock.arrow.circlepath", iconColor: .secondary,
+                                    title: recent.name, subtitle: recent.subtitle
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
-        .background(Color(.systemGroupedBackground))
+        .listStyle(.insetGrouped)
         .scrollDismissesKeyboard(.immediately)
     }
 
     private var searchField: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("Where to?", text: $query)
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Where do you want to go?", text: $query)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
                 .onSubmit { Task { await search() } }
@@ -94,122 +283,143 @@ struct RoutePlanView: View {
                     query = ""
                     searchResults = []
                 } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
                 }
+                .buttonStyle(.plain)
             }
         }
-        .padding(14)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private var batteryContextPill: some View {
+    private var shortcutChips: some View {
         HStack(spacing: 8) {
-            Image(systemName: appState.hasLiveSOC ? "antenna.radiowaves.left.and.right" : "slider.horizontal.3")
-                .foregroundStyle(appState.hasLiveSOC ? .green : .orange)
-            Text(appState.hasLiveSOC
-                 ? "Live battery from car: \(Format.percent(appState.effectiveSOCFraction))"
-                 : "Manual battery: \(Format.percent(appState.effectiveSOCFraction)) — set in Settings")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            placeChip(.home, icon: "house.fill", label: "Home")
+            placeChip(.work, icon: "briefcase.fill", label: "Work")
             Spacer()
         }
-        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
     }
 
-    private var resultsCard: some View {
-        Card {
-            VStack(spacing: 0) {
-                ForEach(Array(searchResults.enumerated()), id: \.offset) { index, item in
-                    Button {
-                        Task { await appState.planRoute(to: item) }
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "mappin.circle.fill")
-                                .font(.title3)
-                                .foregroundStyle(.red)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.name ?? "Unknown")
-                                    .foregroundStyle(.primary)
-                                if let address = item.placemark.title {
-                                    Text(address)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.vertical, 10)
-                        .contentShape(Rectangle())
+    private func placeChip(_ kind: SavedPlace.Kind, icon: String, label: String) -> some View {
+        Group {
+            if let place = appState.place(kind) {
+                Button {
+                    Task {
+                        await appState.planRoute(
+                            toName: place.name,
+                            latitude: place.latitude, longitude: place.longitude
+                        )
                     }
-                    .buttonStyle(.plain)
-                    if index < searchResults.count - 1 { Divider() }
+                } label: {
+                    Label(label, systemImage: icon)
+                        .font(.subheadline.weight(.medium))
                 }
+                .buttonStyle(.bordered)
+                .contextMenu {
+                    Button("Change \(label)") { editingPlaceKind = kind }
+                    Button("Remove \(label)", role: .destructive) { appState.removePlace(kind) }
+                }
+            } else {
+                Button {
+                    editingPlaceKind = kind
+                } label: {
+                    Label("Set \(label)", systemImage: icon)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.bordered)
             }
         }
     }
 
-    private var recentsCard: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Recent")
-                    .font(.headline)
-                    .padding(.bottom, 6)
-                ForEach(appState.recentDestinations) { recent in
-                    Button {
-                        let placemark = MKPlacemark(coordinate: CLLocationCoordinate2D(
-                            latitude: recent.latitude, longitude: recent.longitude
-                        ))
-                        let item = MKMapItem(placemark: placemark)
-                        item.name = recent.name
-                        Task { await appState.planRoute(to: item) }
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: "clock.arrow.circlepath")
-                                .foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(recent.name)
-                                    .foregroundStyle(.primary)
-                                if !recent.subtitle.isEmpty {
-                                    Text(recent.subtitle)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                            }
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.vertical, 10)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+    // MARK: Vehicle card (ABRP-style)
+
+    private var socBinding: Binding<Double> {
+        Binding(
+            get: { appState.effectiveSOCFraction * 100 },
+            set: { newValue in
+                if appState.hasLiveSOC {
+                    appState.departureSOCOverride = newValue / 100
+                } else {
+                    appState.manualSOCPercent = newValue
                 }
             }
+        )
+    }
+
+    private var vehicleCard: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(appState.vehicle?.nickname ?? "Hyundai IONIQ 5")
+                            .font(.headline)
+                        Text(appState.settings.trim.rawValue)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button {
+                        showOptions = true
+                    } label: {
+                        Label("Options", systemImage: "slider.horizontal.3")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                HStack {
+                    Image(systemName: "battery.75percent")
+                        .foregroundStyle(.green)
+                    Text("\(Int((appState.effectiveSOCFraction * 100).rounded()))%")
+                        .font(.title3.weight(.bold))
+                        .contentTransition(.numericText())
+                    Spacer()
+                    if appState.departureSOCOverride != nil, appState.hasLiveSOC {
+                        Button {
+                            appState.departureSOCOverride = nil
+                        } label: {
+                            Label("Use live SoC", systemImage: "arrow.triangle.2.circlepath")
+                                .font(.caption.weight(.medium))
+                        }
+                    } else if appState.hasLiveSOC {
+                        Label("Live data", systemImage: "antenna.radiowaves.left.and.right")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                }
+
+                Slider(value: socBinding, in: 5...100, step: 1)
+                    .tint(.green)
+
+                if let temp = appState.lastPlanTempF {
+                    Text(String(format: "Range adjusted for %.0f°F weather", temp))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.vertical, 4)
         }
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "map")
-                .font(.system(size: 40))
+    private func destinationRow(icon: String, iconColor: Color, title: String, subtitle: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .foregroundStyle(iconColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).foregroundStyle(.primary)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption)
                 .foregroundStyle(.tertiary)
-            Text("Plan a road trip")
-                .font(.headline)
-            Text("Search a destination and EV Route Plan will place DC fast-charging stops sized for your Ioniq 5's battery — then hand navigation to Apple Maps and CarPlay.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
         }
-        .padding(.top, 48)
-        .padding(.horizontal, 24)
+        .contentShape(Rectangle())
     }
 
     private func search() async {
@@ -229,262 +439,6 @@ struct RoutePlanView: View {
     }
 }
 
-// MARK: - Planned route display
-
-private struct PlannedRouteView: View {
-    let route: PlannedRoute
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                routeMap
-                    .frame(height: 240)
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-
-                summaryCard
-
-                if route.needsCharging {
-                    timelineCard
-                } else {
-                    Card {
-                        Label("No charging needed — you'll arrive with \(Format.percent(route.arrivalSOC)).",
-                              systemImage: "checkmark.circle.fill")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.green)
-                    }
-                }
-
-                actionButtons
-            }
-            .padding(.horizontal)
-            .padding(.bottom, 24)
-        }
-        .background(Color(.systemGroupedBackground))
-    }
-
-    private var routeMap: some View {
-        Map {
-            MapPolyline(coordinates: route.polylineCoordinates)
-                .stroke(.blue, lineWidth: 4)
-            ForEach(Array(route.stops.enumerated()), id: \.element.id) { index, stop in
-                Marker("\(index + 1). \(stop.station.name)",
-                       systemImage: "bolt.fill",
-                       coordinate: stop.station.coordinate)
-                    .tint(.green)
-            }
-            Marker(route.destinationName, coordinate: route.destinationCoordinate)
-                .tint(.red)
-        }
-        .allowsHitTesting(false)
-    }
-
-    private var summaryCard: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Image(systemName: "flag.checkered")
-                        .foregroundStyle(.tint)
-                    Text(route.destinationName)
-                        .font(.headline)
-                        .lineLimit(2)
-                }
-                HStack(spacing: 10) {
-                    StatTile(icon: "clock.fill", title: "Total time",
-                             value: Format.minutes(route.totalMinutes), tint: .blue)
-                    StatTile(icon: "road.lanes", title: "Distance",
-                             value: Format.miles(route.totalMiles), tint: .indigo)
-                    if route.needsCharging {
-                        StatTile(icon: "bolt.fill", title: "Charging",
-                                 value: Format.minutes(route.chargeMinutes), tint: .green)
-                    } else {
-                        StatTile(icon: "battery.75percent", title: "Arrive at",
-                                 value: Format.percent(route.arrivalSOC), tint: .green)
-                    }
-                }
-                if route.needsCharging {
-                    HStack {
-                        Label("\(route.stops.count) stop\(route.stops.count == 1 ? "" : "s")",
-                              systemImage: "bolt.circle.fill")
-                        Spacer()
-                        Label("Arrive at \(Format.percent(route.arrivalSOC))",
-                              systemImage: "battery.50percent")
-                    }
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    // MARK: Timeline
-
-    private var timelineCard: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 0) {
-                Text("Charging Stops")
-                    .font(.headline)
-                    .padding(.bottom, 12)
-                ForEach(Array(route.stops.enumerated()), id: \.element.id) { index, stop in
-                    TimelineStopRow(index: index + 1, stop: stop, isLast: false)
-                }
-                destinationRow
-            }
-        }
-    }
-
-    private var destinationRow: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(spacing: 0) {
-                Image(systemName: "flag.checkered.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.red)
-            }
-            .frame(width: 28)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(route.destinationName)
-                    .font(.subheadline.weight(.semibold))
-                Text("Arrive with \(Format.percent(route.arrivalSOC)) battery")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-    }
-
-    // MARK: Actions
-
-    private var actionButtons: some View {
-        VStack(spacing: 10) {
-            Button {
-                navigateToNextStop()
-            } label: {
-                Label(route.needsCharging ? "Navigate to First Charging Stop" : "Navigate to Destination",
-                      systemImage: "arrow.triangle.turn.up.right.circle.fill")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 6)
-            }
-            .buttonStyle(.borderedProminent)
-
-            if route.needsCharging {
-                Button {
-                    openFullRouteInMaps()
-                } label: {
-                    Label("Send Full Route to Apple Maps", systemImage: "map")
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(.bordered)
-
-                Text("Navigation shows on CarPlay via Apple Maps. \"Full route\" adds every charging stop as a waypoint; or go stop-by-stop and tap the next stop while you charge.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.center)
-            }
-        }
-    }
-
-    private func navigateToNextStop() {
-        let item: MKMapItem
-        if let first = route.stops.first {
-            item = MKMapItem(placemark: MKPlacemark(coordinate: first.station.coordinate))
-            item.name = first.station.name
-        } else {
-            item = MKMapItem(placemark: MKPlacemark(coordinate: route.destinationCoordinate))
-            item.name = route.destinationName
-        }
-        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
-    }
-
-    /// Multi-stop handoff via the Apple Maps URL scheme
-    /// (daddr=A+to:B+to:C). MKMapItem.openMaps doesn't support >2 waypoints.
-    private func openFullRouteInMaps() {
-        var waypoints = route.stops.map { stop in
-            String(format: "%.5f,%.5f", stop.station.latitude, stop.station.longitude)
-        }
-        waypoints.append(String(format: "%.5f,%.5f",
-                                route.destinationCoordinate.latitude,
-                                route.destinationCoordinate.longitude))
-        let daddr = waypoints.joined(separator: "+to:")
-        var components = URLComponents(string: "https://maps.apple.com/")!
-        // No saddr → Apple Maps starts from the current location.
-        components.queryItems = [
-            URLQueryItem(name: "daddr", value: daddr),
-            URLQueryItem(name: "dirflg", value: "d"),
-        ]
-        if let url = components.url {
-            UIApplication.shared.open(url)
-        }
-    }
-}
-
-// MARK: - Timeline row
-
-private struct TimelineStopRow: View {
-    let index: Int
-    let stop: ChargingStop
-    let isLast: Bool
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(spacing: 2) {
-                Image(systemName: "\(index).circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.green)
-                Rectangle()
-                    .fill(Color(.separator))
-                    .frame(width: 1)
-                    .frame(minHeight: 30)
-            }
-            .frame(width: 28)
-
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(stop.station.name)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(2)
-                        HStack(spacing: 6) {
-                            Text(stop.station.network)
-                            if stop.station.hasNACS {
-                                Text("NACS")
-                                    .font(.caption2.weight(.bold))
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1)
-                                    .background(Color.green.opacity(0.15))
-                                    .clipShape(Capsule())
-                                    .foregroundStyle(.green)
-                            }
-                            Text("\(stop.station.dcFastCount) plugs")
-                        }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button {
-                        let item = MKMapItem(placemark: MKPlacemark(coordinate: stop.station.coordinate))
-                        item.name = stop.station.name
-                        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
-                    } label: {
-                        Image(systemName: "arrow.triangle.turn.up.right.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.tint)
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                SOCBar(fromSOC: stop.arrivalSOC, toSOC: stop.departureSOC)
-
-                HStack(spacing: 14) {
-                    Label(Format.miles(stop.legMiles), systemImage: "road.lanes")
-                    Label("\(Format.percent(stop.arrivalSOC)) → \(Format.percent(stop.departureSOC))",
-                          systemImage: "battery.50percent")
-                    Label(Format.minutes(stop.chargeMinutes), systemImage: "clock")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            .padding(.bottom, 14)
-        }
-    }
+extension SavedPlace.Kind: Identifiable {
+    public var id: String { rawValue }
 }

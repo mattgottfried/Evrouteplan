@@ -3,7 +3,7 @@
 Personal iPhone + CarPlay companion for a **2026 Hyundai Ioniq 5** that replaces two paid apps:
 
 - **BetterBlue** → the **My Car** tab talks directly to Hyundai BlueLink: live battery %, range, charging state, doors, 12 V battery, odometer, plus remote lock/unlock, climate, and charge start/stop.
-- **A Better Route Planner** → the **Plan** tab routes any trip with DC fast-charging stops sized for the Ioniq 5 (NACS + CCS chargers, real charging-curve estimates), then hands the whole route — charging stops included — to Apple Maps, which navigates on **CarPlay**.
+- **A Better Route Planner** → the **Plan** tab is a full ABRP-style map planner: full-screen map with DC fast-charger pins (tap for details/navigate), Home/Work shortcuts, battery slider with "Use live SoC", per-trip options (avoid tolls/highways, minimum charger power, prefer NACS), saved plans, and charging stops sized by a consumption model (Wh/mi × speed × WeatherKit temperature). Routes hand off — charging stops included — to Apple Maps, which navigates on **CarPlay**. Charging sessions are logged automatically to a history view, and an active charge shows as a Live Activity on the Lock Screen / Dynamic Island.
 
 No third-party code, no server, no subscription. Credentials stay in the phone's Keychain. The BlueLink integration uses the same public owner API the MyHyundai app uses (endpoints verified against the open-source `hyundai_kia_connect_api` project).
 
@@ -14,6 +14,10 @@ No third-party code, no server, no subscription. Credentials stay in the phone's
 ### 1. Get a free NREL API key (charger database)
 
 Sign up at <https://developer.nlr.gov/signup/> (the API portal formerly at developer.nrel.gov) — the key arrives instantly by email. This is the US Department of Energy charging-station database (the same underlying data ABRP uses for US chargers). You'll paste the key into the app's Settings tab after install — no build configuration needed.
+
+### 1b. Enable WeatherKit on your App ID (required before building)
+
+Weather-adjusted range uses Apple's WeatherKit (free, 500k calls/month with your developer account), and the entitlement ships **enabled**. Before building: [developer.apple.com](https://developer.apple.com/account) → Identifiers → your app ID → tick **WeatherKit** on **both** the Capabilities and App Services tabs, then save. Skipping this makes code signing fail with a provisioning error naming WeatherKit — that's the tell.
 
 ### 2. Open and sign the project
 

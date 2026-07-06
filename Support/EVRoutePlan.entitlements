@@ -2,6 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Requires the WeatherKit capability enabled on the App ID
+	     (developer.apple.com → Identifiers → your app → Capabilities AND
+	     App Services tabs). See README. -->
+	<key>com.apple.developer.weatherkit</key>
+	<true/>
 	<!--
 	CarPlay: after Apple approves your "EV charging app" CarPlay entitlement
 	request (see README step 5), uncomment the two lines below. Building with

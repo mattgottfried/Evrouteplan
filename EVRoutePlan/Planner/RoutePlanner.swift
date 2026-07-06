@@ -33,9 +33,11 @@ struct RoutePlanner {
         from origins: [MKMapItem],
         to destination: MKMapItem,
         startSOC: Double,
-        settings: PlannerSettings
+        settings: PlannerSettings,
+        weatherMultiplier: Double = 1.0
     ) async throws -> PlannedRoute {
-        let route = try await fetchRoute(origins: origins, destination: destination)
+        let milesPerSOC = settings.milesPerSOC(weatherMultiplier: weatherMultiplier)
+        let route = try await fetchRoute(origins: origins, destination: destination, settings: settings)
 
         let path = RoutePath(polyline: route.polyline)
         let totalMiles = route.distance / 1609.344
@@ -49,10 +51,10 @@ struct RoutePlanner {
 
         while true {
             let remaining = totalMiles - positionMiles
-            let reachableMiles = max(soc - settings.reserveSOC, 0) * settings.milesPerSOC
+            let reachableMiles = max(soc - settings.reserveSOC, 0) * milesPerSOC
 
             if remaining <= reachableMiles {
-                let arrivalSOC = soc - remaining / settings.milesPerSOC
+                let arrivalSOC = soc - remaining / milesPerSOC
                 return PlannedRoute(
                     destinationName: destinationName,
                     destinationCoordinate: destinationCoord,
@@ -73,6 +75,7 @@ struct RoutePlanner {
                 totalMiles: totalMiles,
                 soc: soc,
                 settings: settings,
+                milesPerSOC: milesPerSOC,
                 excluding: usedStationIDs
             ) else {
                 throw RoutePlannerError.noChargerFound(nearMile: positionMiles + reachableMiles)
@@ -87,13 +90,15 @@ struct RoutePlanner {
 
     // MARK: - Directions
 
-    private func fetchRoute(origins: [MKMapItem], destination: MKMapItem) async throws -> MKRoute {
+    private func fetchRoute(origins: [MKMapItem], destination: MKMapItem, settings: PlannerSettings) async throws -> MKRoute {
         var lastErrorText = "no origins available"
         for origin in origins {
             let request = MKDirections.Request()
             request.source = origin
             request.destination = destination
             request.transportType = .automobile
+            request.tollPreference = settings.avoidTolls ? .avoid : .any
+            request.highwayPreference = settings.avoidHighways ? .avoid : .any
             do {
                 let response = try await MKDirections(request: request).calculate()
                 if let route = response.routes.first { return route }
@@ -124,6 +129,7 @@ struct RoutePlanner {
         totalMiles: Double,
         soc: Double,
         settings: PlannerSettings,
+        milesPerSOC: Double,
         excluding: Set<Int>
     ) async throws -> StopCandidate? {
         // Search near 85 % of reachable distance first, then fall back closer.
@@ -145,7 +151,8 @@ struct RoutePlanner {
             }
 
             let candidates: [StopCandidate] = stations.compactMap { station in
-                guard !excluding.contains(station.id) else { return nil }
+                guard !excluding.contains(station.id),
+                      station.estimatedPeakKWForIoniq5 >= settings.minChargerKW else { return nil }
                 let (routeMiles, detourMiles) = path.projection(of: station.coordinate)
                 // Must be ahead of us and reachable with the detour included.
                 let milesToStation = (routeMiles - positionMiles) + detourMiles
@@ -153,13 +160,13 @@ struct RoutePlanner {
                       milesToStation <= reachableMiles,
                       detourMiles <= settings.corridorRadiusMiles else { return nil }
 
-                let arrivalSOC = soc - milesToStation / settings.milesPerSOC
+                let arrivalSOC = soc - milesToStation / milesPerSOC
                 guard arrivalSOC >= settings.reserveSOC * 0.5 else { return nil }
 
                 // Charge only as much as the rest of the trip needs (plus
                 // reserve), capped at the fast-charge ceiling.
                 let remainingAfter = (totalMiles - routeMiles) + detourMiles
-                let neededSOC = remainingAfter / settings.milesPerSOC + settings.reserveSOC
+                let neededSOC = remainingAfter / milesPerSOC + settings.reserveSOC
                 let departureSOC = min(max(neededSOC, arrivalSOC + 0.05), settings.maxChargeSOC)
 
                 let peakKW = min(station.estimatedPeakKWForIoniq5, 257)
@@ -184,8 +191,8 @@ struct RoutePlanner {
             // Best = quality score, minus penalties for detour and for being
             // far short of the reachable horizon (which would force extra stops).
             if let best = candidates.max(by: { lhs, rhs in
-                score(lhs, positionMiles: positionMiles, reachableMiles: reachableMiles)
-                    < score(rhs, positionMiles: positionMiles, reachableMiles: reachableMiles)
+                score(lhs, positionMiles: positionMiles, reachableMiles: reachableMiles, settings: settings)
+                    < score(rhs, positionMiles: positionMiles, reachableMiles: reachableMiles, settings: settings)
             }) {
                 return best
             }
@@ -193,9 +200,11 @@ struct RoutePlanner {
         return nil
     }
 
-    private func score(_ c: StopCandidate, positionMiles: Double, reachableMiles: Double) -> Double {
+    private func score(_ c: StopCandidate, positionMiles: Double, reachableMiles: Double, settings: PlannerSettings) -> Double {
         let progress = (c.routeMiles - positionMiles) / max(reachableMiles, 1)  // 0–1
-        return c.station.stopScore + progress * 120 - c.detourMiles * 6
+        var total = c.station.stopScore + progress * 120 - c.detourMiles * 6
+        if settings.preferNACS && c.station.hasNACS { total += 40 }
+        return total
     }
 }
 
