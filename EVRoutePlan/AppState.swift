@@ -158,6 +158,7 @@ final class AppState {
             if let soc = fresh.socPercent {
                 manualSOCPercent = soc  // keep the fallback in sync with reality
             }
+            ChargingActivityController.sync(status: fresh, vehicleName: vehicle.nickname)
         } catch {
             lastError = error.localizedDescription
         }
@@ -186,14 +187,20 @@ final class AppState {
         planState = .planning
         plannedRoute = nil
         do {
-            let origin: MKMapItem
+            // Candidate origins, best first; the planner tries each until
+            // Apple Maps produces a route.
+            var origins: [MKMapItem] = []
             if let location = await LocationProvider.shared.currentLocation() {
-                origin = MKMapItem(placemark: MKPlacemark(coordinate: location.coordinate))
-            } else {
-                origin = MKMapItem.forCurrentLocation()
+                origins.append(MKMapItem(placemark: MKPlacemark(coordinate: location.coordinate)))
+            }
+            origins.append(MKMapItem.forCurrentLocation())
+            if let lat = status?.latitude, let lon = status?.longitude {
+                origins.append(MKMapItem(placemark: MKPlacemark(
+                    coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon)
+                )))
             }
             let route = try await planner.plan(
-                from: origin,
+                from: origins,
                 to: destination,
                 startSOC: effectiveSOCFraction,
                 settings: settings

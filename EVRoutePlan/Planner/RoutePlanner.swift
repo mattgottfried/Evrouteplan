@@ -3,14 +3,14 @@ import Foundation
 import MapKit
 
 enum RoutePlannerError: LocalizedError {
-    case noRoute
+    case directionsFailed(destination: String, underlying: String)
     case noChargerFound(nearMile: Double)
     case tooManyStops
 
     var errorDescription: String? {
         switch self {
-        case .noRoute:
-            return "Apple Maps could not find a driving route to that destination."
+        case .directionsFailed(let destination, let underlying):
+            return "Apple Maps couldn't compute a driving route to \(destination) (\(underlying)). If Airplane Mode is on, try turning it off — routing needs Apple's servers."
         case .noChargerFound(let mile):
             return String(format: "No usable DC fast charger found near mile %.0f of the route. Try raising the corridor radius in Settings.", mile)
         case .tooManyStops:
@@ -25,18 +25,17 @@ enum RoutePlannerError: LocalizedError {
 struct RoutePlanner {
     let nrel: NRELClient
 
+    /// `origins` are tried in order until Apple Maps returns a route —
+    /// callers pass a fresh GPS fix, Apple's own current-location resolver,
+    /// and the car's last known position, so one bad origin can't sink the
+    /// whole plan.
     func plan(
-        from origin: MKMapItem,
+        from origins: [MKMapItem],
         to destination: MKMapItem,
         startSOC: Double,
         settings: PlannerSettings
     ) async throws -> PlannedRoute {
-        let request = MKDirections.Request()
-        request.source = origin
-        request.destination = destination
-        request.transportType = .automobile
-        let response = try await MKDirections(request: request).calculate()
-        guard let route = response.routes.first else { throw RoutePlannerError.noRoute }
+        let route = try await fetchRoute(origins: origins, destination: destination)
 
         let path = RoutePath(polyline: route.polyline)
         let totalMiles = route.distance / 1609.344
@@ -84,6 +83,29 @@ struct RoutePlanner {
             positionMiles = stop.routeMiles
             soc = stop.chargingStop.departureSOC
         }
+    }
+
+    // MARK: - Directions
+
+    private func fetchRoute(origins: [MKMapItem], destination: MKMapItem) async throws -> MKRoute {
+        var lastErrorText = "no origins available"
+        for origin in origins {
+            let request = MKDirections.Request()
+            request.source = origin
+            request.destination = destination
+            request.transportType = .automobile
+            do {
+                let response = try await MKDirections(request: request).calculate()
+                if let route = response.routes.first { return route }
+                lastErrorText = "empty route response"
+            } catch {
+                lastErrorText = error.localizedDescription
+            }
+        }
+        throw RoutePlannerError.directionsFailed(
+            destination: destination.name ?? "the destination",
+            underlying: lastErrorText
+        )
     }
 
     // MARK: - Stop selection
