@@ -2,17 +2,34 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Shares vehicle status with the home-screen widget. Managed signing
-	     auto-provisions app groups; manual fallback documented in README. -->
+	<!-- ============================================================
+	     OPTIONAL CAPABILITIES — commented out so the app signs with
+	     ZERO developer-portal setup. The app runs fine without them:
+	     weather adjustment quietly turns off, and the home-screen
+	     widget shows "open the app" until the App Group exists.
+
+	     To enable, do the portal steps below, wait ~30 minutes for
+	     propagation, then uncomment and rebuild.
+
+	     1. WeatherKit (weather-adjusted range):
+	        developer.apple.com → Identifiers → com.mattgottfried.EVRoutePlan
+	        → tick WeatherKit on BOTH the Capabilities and App Services
+	        tabs → Save. Then uncomment:
+
+	<key>com.apple.developer.weatherkit</key>
+	<true/>
+
+	     2. App Group (feeds the home-screen battery widget):
+	        developer.apple.com → Identifiers → App Groups → + →
+	        register group.com.mattgottfried.EVRoutePlan, then enable it
+	        on BOTH the app ID and the ChargingWidget ID. Then uncomment
+	        here AND in Support/ChargingWidget.entitlements:
+
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.com.mattgottfried.EVRoutePlan</string>
 	</array>
-	<!-- Requires the WeatherKit capability enabled on the App ID
-	     (developer.apple.com → Identifiers → your app → Capabilities AND
-	     App Services tabs). See README. -->
-	<key>com.apple.developer.weatherkit</key>
-	<true/>
+	     ============================================================ -->
 	<!--
 	CarPlay: after Apple approves your "EV charging app" CarPlay entitlement
 	request (see README step 5), uncomment the two lines below. Building with

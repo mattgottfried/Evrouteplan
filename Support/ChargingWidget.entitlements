@@ -2,9 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Uncomment together with the matching block in
+	     Support/EVRoutePlan.entitlements after registering the App Group
+	     in the developer portal (see that file for the exact steps).
+
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.com.mattgottfried.EVRoutePlan</string>
 	</array>
+	-->
 </dict>
 </plist>
