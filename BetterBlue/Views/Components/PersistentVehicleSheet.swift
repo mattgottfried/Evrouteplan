@@ -1176,6 +1176,12 @@ struct PersistentVehicleSheet: View {
                 navigateTile(to: location)
             }
 
+            if bbVehicle.fuelType == .electric {
+                actionTile("Plan Trip", systemImage: "point.topright.arrow.triangle.backward.to.point.bottomleft.scurvepath.fill") {
+                    sheetPresentation.show(.tripPlanner(vehicle: bbVehicle))
+                }
+            }
+
             if bbVehicle.fuelType.hasElectricCapability,
                bbVehicle.account?.supportedEVTripTypes.contains(.summary) == true {
                 actionTile("Trip History", systemImage: "chart.line.uptrend.xyaxis") {

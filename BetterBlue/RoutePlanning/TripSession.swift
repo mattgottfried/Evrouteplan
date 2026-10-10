@@ -239,7 +239,8 @@ final class TripSession {
     // MARK: - Live updates
 
     private func handleFix(_ fix: CLLocationCoordinate2D) {
-        guard var trip = activeTrip, var tracker, let route = plannedRoute else { return }
+        guard var trip = activeTrip, var tracker, let route = plannedRoute,
+              route.legs.indices.contains(trip.legIndex) else { return }
 
         if let previous = previousFix {
             let step = Geo.miles(previous, fix)

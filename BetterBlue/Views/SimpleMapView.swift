@@ -19,8 +19,17 @@ struct SimpleMapView: View {
     var canvasSlack: (trailing: CGFloat, bottom: CGFloat) = (0, 0)
     @State private var mapPosition: MapCameraPosition = .automatic
 
+    /// The route to overlay while a planned trip is being driven.
+    private var tripRoute: PlannedRoute? {
+        TripSession.shared.activeTrip != nil ? TripSession.shared.plannedRoute : nil
+    }
+
     var body: some View {
         Map(position: $mapPosition, interactionModes: []) {
+            if let route = tripRoute {
+                TripMapContent(route: route, currentLegIndex: TripSession.shared.activeTrip?.legIndex)
+                UserAnnotation()
+            }
             if let vehicle = currentVehicle, let coordinate = vehicle.coordinate {
                 Annotation(vehicle.displayName, coordinate: coordinate) {
                     VehicleMapMarker(
@@ -56,6 +65,12 @@ struct SimpleMapView: View {
         .onAppear {
             updateMapPosition()
         }
+        .onChange(of: TripSession.shared.activeTrip?.legIndex) { _, _ in
+            updateMapPosition()
+        }
+        .onChange(of: TripSession.shared.plannedRoute?.createdAt) { _, _ in
+            updateMapPosition()
+        }
     }
 
     /// Camera altitude used whenever the map is focused on a vehicle.
@@ -66,6 +81,11 @@ struct SimpleMapView: View {
     private static let vehicleCameraDistance: CLLocationDistance = 6000
 
     private func updateMapPosition() {
+        // During a trip, frame the leg being driven instead of the car.
+        if let route = tripRoute, let leg = TripSession.shared.currentLeg ?? route.legs.first {
+            withAnimation { mapPosition = .rect(MKMapRect(fitting: leg.coordinates)) }
+            return
+        }
         if mapRegion.span.latitudeDelta <= 0.02 {
             // Vehicle focus (MainView's `defaultSpan` is 0.01): fixed
             // zoom, centered on the vehicle.

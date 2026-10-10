@@ -154,6 +154,10 @@ struct SettingsView: View {
                     Text("Units")
                 }
 
+                if displayedVehicles.contains(where: { $0.fuelType == .electric }) {
+                    RoutePlanningSettingsSection()
+                }
+
                 Section {
                     Toggle("Debug Mode", isOn: $appSettings.debugModeEnabled)
 

@@ -244,12 +244,24 @@ struct MainView: View {
     private var vehicleMap: some View {
         mapLayer
             .overlay(alignment: .top) {
-                // Explains the marker-less, zoomed-out map when the API
-                // returned no GPS fix for the selected vehicle.
-                if let vehicle = currentVehicle, vehicle.coordinate == nil {
+                // Route planning: live trip status takes the top slot.
+                if TripSession.shared.activeTrip != nil {
+                    ActiveTripBanner {
+                        if let vehicle = currentVehicle {
+                            sheetPresentation.show(.tripPlanner(vehicle: vehicle))
+                        }
+                    }
+                    .padding(.horizontal, Self.navigationBarMargin)
+                    .padding(.top, 8)
+                    .frame(maxWidth: 560)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                } else if let vehicle = currentVehicle, vehicle.coordinate == nil {
+                    // Explains the marker-less, zoomed-out map when the API
+                    // returned no GPS fix for the selected vehicle.
                     missingLocationBanner(for: vehicle)
                 }
             }
+            .animation(.easeInOut(duration: 0.25), value: TripSession.shared.activeTrip != nil)
     }
 
     /// The map, sized so that interactive window resizes never change
@@ -513,6 +525,8 @@ struct MainView: View {
             ClimateSettingsSheet(vehicle: vehicle)
         case .chargeLimitSettings(let vehicle):
             ChargeLimitSettingsSheet(vehicle: vehicle)
+        case .tripPlanner(let vehicle):
+            TripPlannerView(vehicle: vehicle) { sheetPresentation.dismiss() }
         }
     }
 

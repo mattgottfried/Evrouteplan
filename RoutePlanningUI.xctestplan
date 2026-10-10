@@ -1,0 +1,20 @@
+{
+  "configurations": [
+    {
+      "id": "8B2D4F6A-1C3E-4A5B-9D7F-0E2C4A6B8D10",
+      "name": "Default",
+      "options": {}
+    }
+  ],
+  "defaultOptions": {},
+  "testTargets": [
+    {
+      "target": {
+        "containerPath": "container:BetterBlue.xcodeproj",
+        "identifier": "EE7E58000000000000000001",
+        "name": "BetterBlueUITests"
+      }
+    }
+  ],
+  "version": 1
+}

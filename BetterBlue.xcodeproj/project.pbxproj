@@ -52,6 +52,13 @@
 			remoteGlobalIDString = ED37F0232DFB4E4F00C02398;
 			remoteInfo = BetterBlue;
 		};
+		EE7E5800000000000000000A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = ED37F01C2DFB4E4F00C02398 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = ED37F0232DFB4E4F00C02398;
+			remoteInfo = BetterBlue;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -107,6 +114,7 @@
 		EDC0F1600000000000000001 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
 		EDC0F1600000000000000002 /* Local.xcconfig.template */ = {isa = PBXFileReference; lastKnownFileType = text; path = Local.xcconfig.template; sourceTree = "<group>"; };
 		EE7E57000000000000000002 /* BetterBlueTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BetterBlueTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		EE7E58000000000000000002 /* BetterBlueUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BetterBlueUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -313,6 +321,11 @@
 			path = BetterBlueTests;
 			sourceTree = "<group>";
 		};
+		EE7E58000000000000000003 /* BetterBlueUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = BetterBlueUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -360,6 +373,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		EE7E58000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -375,6 +395,7 @@
 				ED70548A2E61F57000CA7926 /* Widget */,
 				ED81032C2F2978550072BDDE /* WatchWidget */,
 				EE7E57000000000000000003 /* BetterBlueTests */,
+				EE7E58000000000000000003 /* BetterBlueUITests */,
 				EDC9B1CD2DFC677000C602F4 /* Frameworks */,
 				ED37F0252DFB4E4F00C02398 /* Products */,
 			);
@@ -388,6 +409,7 @@
 				ED7054852E61F57000CA7926 /* WidgetExtension.appex */,
 				ED8103292F2978550072BDDE /* WatchWidgetExtension.appex */,
 				EE7E57000000000000000002 /* BetterBlueTests.xctest */,
+				EE7E58000000000000000002 /* BetterBlueUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -545,6 +567,27 @@
 			productReference = EE7E57000000000000000002 /* BetterBlueTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		EE7E58000000000000000001 /* BetterBlueUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EE7E58000000000000000009 /* Build configuration list for PBXNativeTarget "BetterBlueUITests" */;
+			buildPhases = (
+				EE7E58000000000000000004 /* Sources */,
+				EE7E58000000000000000005 /* Frameworks */,
+				EE7E58000000000000000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EE7E5800000000000000000B /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				EE7E58000000000000000003 /* BetterBlueUITests */,
+			);
+			name = BetterBlueUITests;
+			productName = BetterBlueUITests;
+			productReference = EE7E58000000000000000002 /* BetterBlueUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -566,6 +609,10 @@
 					};
 					ED8103282F2978550072BDDE = {
 						CreatedOnToolsVersion = 26.1;
+					};
+					EE7E58000000000000000001 = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = ED37F0232DFB4E4F00C02398;
 					};
 					EE7E57000000000000000001 = {
 						CreatedOnToolsVersion = 27.0;
@@ -596,6 +643,7 @@
 				ED7054842E61F57000CA7926 /* WidgetExtension */,
 				ED8103282F2978550072BDDE /* WatchWidgetExtension */,
 				EE7E57000000000000000001 /* BetterBlueTests */,
+				EE7E58000000000000000001 /* BetterBlueUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -632,6 +680,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		EE7E57000000000000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EE7E58000000000000000006 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -676,6 +731,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		EE7E58000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -698,6 +760,11 @@
 			isa = PBXTargetDependency;
 			target = ED37F0232DFB4E4F00C02398 /* BetterBlue */;
 			targetProxy = EE7E5700000000000000000A /* PBXContainerItemProxy */;
+		};
+		EE7E5800000000000000000B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = ED37F0232DFB4E4F00C02398 /* BetterBlue */;
+			targetProxy = EE7E5800000000000000000A /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1135,6 +1202,44 @@
 			};
 			name = Release;
 		};
+		EE7E58000000000000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = EDC0F1600000000000000001 /* Shared.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BB_BUNDLE_ID_PREFIX).BetterBlueUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = BetterBlue;
+			};
+			name = Debug;
+		};
+		EE7E58000000000000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = EDC0F1600000000000000001 /* Shared.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(BB_BUNDLE_ID_PREFIX).BetterBlueUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = BetterBlue;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1188,6 +1293,15 @@
 			buildConfigurations = (
 				EE7E57000000000000000007 /* Debug */,
 				EE7E57000000000000000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EE7E58000000000000000009 /* Build configuration list for PBXNativeTarget "BetterBlueUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EE7E58000000000000000007 /* Debug */,
+				EE7E58000000000000000008 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
