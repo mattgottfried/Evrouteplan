@@ -17,4 +17,9 @@ BB_APP_GROUP = group.com.betterblue.shared
 // CloudKit container used for iCloud sync.
 BB_ICLOUD_CONTAINER = iCloud.com.markschmidt.BetterBlue
 
+// NREL Alternative Fuel Stations API key used by route planning to find
+// DC fast chargers. Free at https://developer.nrel.gov/signup — set it in
+// Config/Local.xcconfig (or at runtime in Settings › Route Planning).
+NREL_API_KEY =
+
 #include? "Local.xcconfig"

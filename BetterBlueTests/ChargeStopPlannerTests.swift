@@ -194,3 +194,48 @@ struct EVProfileTests {
         #expect(station(id: 1, atMile: 0, network: nil).estimatedMaxKW == ChargingStation.minimumDCFastKW)
     }
 }
+
+@Suite("Leg progress tracking")
+struct LegProgressTrackerTests {
+    private func fix(atMile mile: Double, offsetMiles: Double = 0) -> CLLocationCoordinate2D {
+        station(id: 0, atMile: mile, offsetMiles: offsetMiles).coordinate
+    }
+
+    @Test func tracksProgressAlongLeg() {
+        var tracker = LegProgressTracker(path: straightRoute(miles: 50))
+        for mile in stride(from: 0.0, through: 20, by: 2) {
+            tracker.update(with: fix(atMile: mile, offsetMiles: 0.01))
+        }
+        #expect(abs(tracker.progressMiles - 20) < 0.3)
+        #expect(abs(tracker.remainingMiles - 30) < 0.5)
+        #expect(!tracker.isOffRoute && !tracker.hasArrived)
+    }
+
+    @Test func offRouteNeedsConsecutiveFixes() {
+        var tracker = LegProgressTracker(path: straightRoute(miles: 50))
+        tracker.update(with: fix(atMile: 10))
+        tracker.update(with: fix(atMile: 11, offsetMiles: 1))
+        tracker.update(with: fix(atMile: 12, offsetMiles: 1))
+        #expect(!tracker.isOffRoute, "two jittery fixes shouldn't trigger")
+        tracker.update(with: fix(atMile: 13, offsetMiles: 1))
+        #expect(tracker.isOffRoute)
+        #expect(abs(tracker.progressMiles - 10) < 0.3, "progress holds while off route")
+        tracker.update(with: fix(atMile: 14))
+        #expect(!tracker.isOffRoute, "back on route clears it")
+    }
+
+    @Test func recoversAfterJumpOutsideWindow() {
+        var tracker = LegProgressTracker(path: straightRoute(miles: 800, step: 0.5))
+        tracker.update(with: fix(atMile: 1))
+        tracker.update(with: fix(atMile: 600))
+        #expect(abs(tracker.progressMiles - 600) < 0.5)
+    }
+
+    @Test func detectsArrival() {
+        var tracker = LegProgressTracker(path: straightRoute(miles: 10))
+        tracker.update(with: fix(atMile: 9.8))
+        #expect(!tracker.hasArrived)
+        tracker.update(with: fix(atMile: 9.95))
+        #expect(tracker.hasArrived)
+    }
+}

@@ -16,3 +16,7 @@ BB_BUNDLE_ID_PREFIX = com.yourname
 // With automatic signing, Xcode registers these for you on first build.
 BB_APP_GROUP = group.com.yourname.betterblue
 BB_ICLOUD_CONTAINER = iCloud.com.yourname.BetterBlue
+
+// NREL API key for route planning's charger search
+// (free at https://developer.nrel.gov/signup).
+NREL_API_KEY = YOUR_NREL_API_KEY

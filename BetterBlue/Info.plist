@@ -6,15 +6,22 @@
 	<string>$(BB_APP_GROUP)</string>
 	<key>BBICloudContainerIdentifier</key>
 	<string>$(BB_ICLOUD_CONTAINER)</string>
+	<key>BBNRELAPIKey</key>
+	<string>$(NREL_API_KEY)</string>
 	<key>LSApplicationQueriesSchemes</key>
 	<array>
 		<string>maps</string>
 		<string>waze</string>
 		<string>comgooglemaps</string>
 	</array>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>BetterBlue keeps tracking your trip while the phone is locked or CarPlay is in use, so charging-stop predictions stay current.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>BetterBlue uses your location to plan EV routes and track trip progress toward your next charging stop.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>
+		<string>location</string>
 	</array>
 </dict>
 </plist>
