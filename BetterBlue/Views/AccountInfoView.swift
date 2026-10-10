@@ -1,0 +1,537 @@
+//
+//  AccountInfoView.swift
+//  BetterBlue
+//
+//  Created by Mark Schmidt on 9/7/25.
+//
+
+import BetterBlueKit
+import SwiftData
+import SwiftUI
+
+struct AccountInfoView: View {
+    let account: BBAccount
+    var transition: Namespace.ID?
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    @State private var newPassword: String = ""
+    @State private var newPin: String = ""
+    @State private var newToken: String = ""
+    @State private var isLoading = false
+    /// Set when a save attempt fails so the form can render a full
+    /// `ErrorDetailsView`. Cleared before each attempt and on success.
+    @State private var saveError: ActionError?
+    @State private var successMessage: String?
+    @State private var showingPasswordDialog = false
+    @State private var showingPinDialog = false
+    @State private var showingRefreshTDialog = false
+    @State private var isResetting = false
+    @State private var fakeVehicles: [BBVehicle] = []
+    /// Hyundai Europe only. Mirrors the same flag in `AddAccountView`
+    /// — when true the credentials section surfaces "Change Refresh
+    /// Token" instead of "Change Password". Initialised on appear
+    /// from the account's stored state (refresh-token mode if a
+    /// refresh token is present).
+    @State private var useToken: Bool = false
+    /// Drives the explainer sheet that fronts the switch INTO
+    /// refresh-token mode. Switching back to password is instant —
+    /// only the "into" direction needs the consent step.
+    @State private var showingRefreshTokenInfo: Bool = false
+    @Namespace private var fallbackTransition
+
+    /// Refresh-token auth is a Hyundai EU feature only. Gates both the
+    /// header's mode toggle and the credential mode itself — without
+    /// the second gate, a non-EU account whose stored password is empty
+    /// (legacy rows predating local password persistence) lands in
+    /// "Change Refresh Token" mode with no toggle to escape it.
+    private var supportsRefreshTokenAuth: Bool {
+        account.brandEnum == .hyundai && account.regionEnum == .europe
+    }
+
+    private var hasPasswordChanges: Bool {
+        !newPassword.isEmpty
+    }
+
+    private var hasPinChanges: Bool {
+        !newPin.isEmpty
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                HStack {
+                    Text("Username")
+                    Spacer()
+                    Text(account.username)
+                        .foregroundColor(.secondary)
+                }
+
+                HStack {
+                    Text("Brand")
+                    Spacer()
+                    Text(account.brandEnum.displayName)
+                        .foregroundColor(.secondary)
+                }
+
+                HStack {
+                    Text("Region")
+                    Spacer()
+                    Text(account.regionEnum.rawValue)
+                        .foregroundColor(.secondary)
+                }
+            } header: {
+                Text("Account Info")
+            }
+
+            Section {
+                // For Hyundai EU the credential row tracks the
+                // header-button mode: refresh-token mode hides the
+                // password row entirely, and vice versa. For every
+                // other region/brand `useToken` stays false so the
+                // password row is always the one shown.
+                if useToken {
+                    Button("Change Refresh Token") {
+                        newToken = ""
+                        showingRefreshTDialog = true
+                    }
+                    .matchedTransitionSource(
+                        id: "change-refresh-token",
+                        in: transition ?? fallbackTransition,
+                    )
+                } else {
+                    Button("Change Password") {
+                        newPassword = ""
+                        showingPasswordDialog = true
+                    }
+                    .matchedTransitionSource(
+                        id: "change-password",
+                        in: transition ?? fallbackTransition,
+                    )
+                }
+
+                // Use the shared (brand, region) matrix from
+                // BetterBlueKit so this stays in sync with the
+                // PIN field on AddAccountView.
+                if requiresPin(brand: account.brandEnum, region: account.regionEnum) {
+                    Button("Change PIN") {
+                        newPin = ""
+                        showingPinDialog = true
+                    }
+                    .matchedTransitionSource(
+                        id: "change-pin",
+                        in: transition ?? fallbackTransition,
+                    )
+                }
+            } header: {
+                HStack {
+                    Text("Credentials")
+                    Spacer()
+                    // Mirrors AddAccountView's header button. Only
+                    // Hyundai EU supports refresh-token auth, so
+                    // hide the affordance for everyone else.
+                    if supportsRefreshTokenAuth {
+                        Button {
+                            if useToken {
+                                // Switching back to password is the
+                                // common direction — no confirmation.
+                                useToken = false
+                            } else {
+                                // Switching INTO refresh-token mode
+                                // opens the explainer sheet first.
+                                showingRefreshTokenInfo = true
+                            }
+                        } label: {
+                            Text(useToken ? "Use Password" : "Use Refresh Token")
+                                .expandedTapTarget()
+                        }
+                        .font(.caption)
+                        .textCase(nil)
+                    }
+                }
+            }
+
+            // Session reset — recovers from a stale token without
+            // re-adding the account. (The Hyundai Canada connection
+            // picker that used to live here went away when the Canada
+            // client was collapsed to a single identity.)
+            Section {
+                Button {
+                    Task { await resetSession() }
+                } label: {
+                    HStack {
+                        Text("Reset Session")
+                        if isResetting {
+                            Spacer()
+                            ProgressView()
+                        }
+                    }
+                }
+                .disabled(isResetting)
+            } header: {
+                Text("Session")
+            } footer: {
+                Text("Forces a fresh login — use if the app is stuck with a stale session.")
+            }
+
+            if AppSettings.shared.debugModeEnabled {
+                Section {
+                    NavigationLink("View HTTP Logs", destination: HTTPLogView(accountId: account.id))
+                } header: {
+                    Text("Debugging")
+                }
+            }
+
+            // Fake vehicle management for fake accounts
+            if account.brandEnum == .fake {
+                FakeVehicleListView(vehicles: $fakeVehicles, accountId: account.id)
+            }
+
+            // Hidden vehicles section
+            let hiddenVehicles = account.safeVehicles.filter(\.isHidden)
+            if !hiddenVehicles.isEmpty {
+                Section {
+                    ForEach(hiddenVehicles, id: \.id) { bbVehicle in
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(bbVehicle.displayName)
+                                    .font(.headline)
+                                Text("VIN: \(bbVehicle.vin)")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+
+                            Button {
+                                bbVehicle.isHidden = false
+                                do {
+                                    try modelContext.save()
+                                } catch {
+                                    BBLogger.error(.app, "Failed to show vehicle: \(error)")
+                                }
+                            } label: {
+                                Text("Show")
+                                    .expandedTapTarget()
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundColor(.blue)
+                        }
+                    }
+                } header: {
+                    Text("Hidden Vehicles")
+                }
+            }
+
+            // Show success/error messages from credential changes
+            if let successMessage {
+                Section {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text(successMessage)
+                            .foregroundColor(.green)
+                    }
+                }
+            } else if let saveError {
+                Section {
+                    ErrorDetailsView(error: saveError)
+                }
+            }
+        }
+        .navigationTitle("Account Info")
+        .navigationBarTitleDisplayMode(.inline)
+        .disabled(isLoading)
+        .overlay {
+            if isLoading {
+                ProgressView()
+                    .scaleEffect(1.5)
+            }
+        }
+        .alert("Change Password", isPresented: $showingPasswordDialog) {
+            SecureField("New Password", text: $newPassword)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                Task {
+                    await savePassword()
+                }
+            }
+            .disabled(newPassword.isEmpty && account.refreshToken.isEmpty)
+        }
+        .alert("Change PIN", isPresented: $showingPinDialog) {
+            SecureField("New PIN", text: $newPin)
+                .keyboardType(.numberPad)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                Task {
+                    await savePin()
+                }
+            }
+            .disabled(newPin.isEmpty)
+        }
+        .alert("Change Refresh Token", isPresented: $showingRefreshTDialog) {
+            SecureField("New Refresh Token", text: $newToken)
+            Button("Cancel", role: .cancel) {}
+            Button("Save") {
+                Task {
+                    await saveRefreshToken()
+                }
+            }
+        }
+        .sheet(isPresented: $showingRefreshTokenInfo) {
+            RefreshTokenInfoSheet {
+                useToken = true
+                // Opening the "Change Refresh Token" dialog
+                // immediately after confirming saves the user a tap
+                // — they just signaled intent to switch, so they're
+                // about to paste a token anyway.
+                newToken = ""
+                DispatchQueue.main.async {
+                    showingRefreshTDialog = true
+                }
+            }
+        }
+        .onAppear {
+            fakeVehicles = account.safeVehicles
+            // Match the UI mode to the account's current auth state.
+            // A genuine refresh-token account has NO password — only
+            // then do we start in refresh-token mode. Password accounts
+            // also cache a server-issued refresh token after login, so
+            // keying off `refreshToken` alone wrongly flipped every
+            // password account into "Change Refresh Token" mode. And
+            // only where token auth exists at all (Hyundai EU): some
+            // older non-EU accounts have an empty stored password, and
+            // without this gate they'd be locked into token mode since
+            // the Use Password toggle is EU-only.
+            useToken = supportsRefreshTokenAuth
+                && account.password.isEmpty
+                && !account.refreshToken.isEmpty
+        }
+    }
+
+    /// Clears the session and re-logs in, then
+    /// refreshes status so the change is visible. Surfaces errors / MFA
+    /// in the existing success/error rows.
+    @MainActor
+    private func resetSession() async {
+        isResetting = true
+        saveError = nil
+        successMessage = nil
+        defer { isResetting = false }
+        do {
+            try await account.resetSession(modelContext: modelContext)
+            for vehicle in account.safeVehicles {
+                try? await account.fetchAndUpdateVehicleStatus(
+                    for: vehicle, modelContext: modelContext, cached: false
+                )
+            }
+            successMessage = "Reconnected."
+        } catch let error as APIError where error.errorType == .requiresMFA {
+            successMessage = "Re-authentication required — open the vehicle to verify."
+        } catch {
+            saveError = ActionError(action: "Reset session", error: error, accountId: account.id)
+        }
+    }
+
+    fileprivate func checkNewAccountData(password: String = "", pin: String = "",
+                                         refreshToken: String = "") async throws {
+        // We don't need to create a new Account struct, just test authentication
+        // Test the new credentials by trying to authenticate
+        let testAccount = BBAccount(
+            username: account.username,
+            password: password,
+            refreshToken: refreshToken,
+            pin: pin,
+            brand: account.brandEnum,
+            region: account.regionEnum,
+        )
+        try await testAccount.initialize(modelContext: modelContext)
+    }
+    
+    private func savePassword() async {
+        guard !newPassword.isEmpty else { return }
+
+        isLoading = true
+        saveError = nil
+
+        do {
+            try await checkNewAccountData(password: newPassword, pin: account.pin)
+
+            // If successful, update the account
+            await MainActor.run {
+                BBAccount.updateAccount(account, password: newPassword, pin: account.pin,
+                                        refreshToken: account.refreshToken, modelContext: modelContext)
+                newPassword = ""
+                isLoading = false
+                saveError = nil
+                successMessage = "Password updated successfully"
+                showingPasswordDialog = false
+
+                // Auto-dismiss success message after 3 seconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    successMessage = nil
+                }
+            }
+
+        } catch {
+            await MainActor.run {
+                saveError = ActionError(
+                    action: "Update password",
+                    error: error,
+                    accountId: account.id
+                )
+                isLoading = false
+                successMessage = nil
+            }
+        }
+    }
+
+    private func saveRefreshToken() async {
+        isLoading = true
+        saveError = nil
+
+        do {
+            try await checkNewAccountData(password: account.password, refreshToken: newToken)
+
+            await MainActor.run {
+                BBAccount.updateAccount(account, password: account.password, pin: account.pin,
+                                        refreshToken: newToken, modelContext: modelContext)
+                isLoading = false
+                saveError = nil
+                successMessage = "Refresh Token updated successfully"
+                showingRefreshTDialog = false
+
+                // Auto-dismiss success message after 3 seconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    successMessage = nil
+                }
+            }
+
+
+        } catch {
+            await MainActor.run {
+                saveError = ActionError(
+                    action: "Update refresh token",
+                    error: error,
+                    accountId: account.id
+                )
+                isLoading = false
+                successMessage = nil
+            }
+        }
+    }
+
+    private func savePin() async {
+        guard !newPin.isEmpty else { return }
+
+        isLoading = true
+        saveError = nil
+
+        do {
+            // We don't need to create a new Account struct, just test authentication
+
+            // Test the new credentials by trying to authenticate
+            try await checkNewAccountData(password: account.password, pin: newPin)
+
+            // If successful, update the account
+            await MainActor.run {
+                BBAccount.updateAccount(account, password: account.password, pin: newPin,
+                                        refreshToken: account.refreshToken, modelContext: modelContext)
+                newPin = ""
+                isLoading = false
+                saveError = nil
+                successMessage = "PIN updated successfully"
+                showingPinDialog = false
+
+                // Auto-dismiss success message after 3 seconds
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                    successMessage = nil
+                }
+            }
+
+        } catch {
+            await MainActor.run {
+                saveError = ActionError(
+                    action: "Update PIN",
+                    error: error,
+                    accountId: account.id
+                )
+                isLoading = false
+                successMessage = nil
+            }
+        }
+    }
+}
+
+#Preview("Hyundai USA") {
+    struct PreviewWrapper: View {
+        var body: some View {
+            let testAccount = BBAccount(
+                username: "test@example.com",
+                password: "password",
+                refreshToken: "",
+                pin: "1234",
+                brand: .hyundai,
+                region: .usa
+            )
+
+            NavigationView {
+                AccountInfoView(account: testAccount)
+            }
+            .modelContainer(for: [BBAccount.self, BBVehicle.self])
+        }
+    }
+    return PreviewWrapper()
+}
+
+#Preview("Hyundai Europe (Refresh Token)") {
+    struct PreviewWrapper: View {
+        var body: some View {
+            // Non-empty refreshToken so `.onAppear` initialises
+            // `useToken = true` — this is the preview that exercises
+            // the header "Use Password" button, the "Change Refresh
+            // Token" credentials row, and the explainer sheet's
+            // entry point. Use a representative-looking opaque blob
+            // for the token field; nothing in the preview actually
+            // tries to authenticate with it.
+            let testAccount = BBAccount(
+                username: "test@example.eu",
+                password: "",
+                refreshToken: "eyJhbGciOiJIUzI1NiJ9.preview-token.signature",
+                pin: "1234",
+                brand: .hyundai,
+                region: .europe
+            )
+
+            NavigationView {
+                AccountInfoView(account: testAccount)
+            }
+            .modelContainer(for: [BBAccount.self, BBVehicle.self])
+        }
+    }
+    return PreviewWrapper()
+}
+
+#Preview("Hyundai Europe (Password)") {
+    struct PreviewWrapper: View {
+        var body: some View {
+            // Empty refreshToken → `useToken` stays false on appear,
+            // so the header button reads "Use Refresh Token" and
+            // tapping it opens the explainer sheet. This is the
+            // preview for the switch-INTO-token flow.
+            let testAccount = BBAccount(
+                username: "test@example.eu",
+                password: "password",
+                refreshToken: "",
+                pin: "1234",
+                brand: .hyundai,
+                region: .europe
+            )
+
+            NavigationView {
+                AccountInfoView(account: testAccount)
+            }
+            .modelContainer(for: [BBAccount.self, BBVehicle.self])
+        }
+    }
+    return PreviewWrapper()
+}

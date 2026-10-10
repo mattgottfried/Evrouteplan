@@ -1,0 +1,206 @@
+//
+//  HTTPLogComponents.swift
+//  BetterBlue
+//
+//  Created by Mark Schmidt on 8/25/25.
+//
+
+import BetterBlueKit
+import SwiftUI
+
+struct JSONBodyView: View {
+    let content: NSAttributedString
+    @Binding var showingShareSheet: Bool
+
+    var body: some View {
+        Text(AttributedString(content))
+            .font(.system(.caption, design: .monospaced))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+            .sheet(isPresented: $showingShareSheet) {
+                ShareSheet(activityItems: [content.string])
+            }
+    }
+}
+
+struct ShareSheet: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context _: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_: UIActivityViewController, context _: Context) {}
+}
+
+struct HTTPLogFilterSheet: View {
+    @Binding var selectedRequestTypes: Set<HTTPRequestType>
+    @Binding var selectedDeviceTypes: Set<DeviceType>
+    @Binding var selectedAccountIds: Set<UUID>
+    let allAccounts: [BBAccount]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    ForEach(HTTPRequestType.allCases, id: \.self) { requestType in
+                        Button {
+                            if selectedRequestTypes.contains(requestType) {
+                                selectedRequestTypes.remove(requestType)
+                            } else {
+                                selectedRequestTypes.insert(requestType)
+                            }
+                        } label: {
+                            HStack {
+                                Image(
+                                    systemName: selectedRequestTypes.contains(requestType) ?
+                                        "checkmark.square.fill" : "square",
+                                )
+                                .foregroundColor(selectedRequestTypes.contains(requestType) ? .accentColor : .secondary)
+                                Text(requestType.displayName)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                            }
+                            // The whole row toggles the filter, not just its text.
+                            .expandedTapTarget()
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                } header: {
+                    HStack {
+                        Text("Request Types")
+                        Spacer()
+                        Button {
+                            selectedRequestTypes = Set(HTTPRequestType.allCases)
+                        } label: {
+                            Text("All")
+                                .expandedTapTarget()
+                        }
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                        Button {
+                            selectedRequestTypes = []
+                        } label: {
+                            Text("None")
+                                .expandedTapTarget()
+                        }
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                    }
+                }
+
+                Section {
+                    ForEach(DeviceType.allCases, id: \.self) { deviceType in
+                        Button {
+                            if selectedDeviceTypes.contains(deviceType) {
+                                selectedDeviceTypes.remove(deviceType)
+                            } else {
+                                selectedDeviceTypes.insert(deviceType)
+                            }
+                        } label: {
+                            HStack {
+                                Image(
+                                    systemName: selectedDeviceTypes.contains(deviceType) ?
+                                        "checkmark.square.fill" : "square",
+                                )
+                                .foregroundColor(selectedDeviceTypes.contains(deviceType) ? .accentColor : .secondary)
+                                Text(deviceType.displayName)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                            }
+                            // The whole row toggles the filter, not just its text.
+                            .expandedTapTarget()
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                    }
+                } header: {
+                    HStack {
+                        Text("Device Types")
+                        Spacer()
+                        Button {
+                            selectedDeviceTypes = Set(DeviceType.allCases)
+                        } label: {
+                            Text("All")
+                                .expandedTapTarget()
+                        }
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                        Button {
+                            selectedDeviceTypes = []
+                        } label: {
+                            Text("None")
+                                .expandedTapTarget()
+                        }
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                    }
+                }
+
+                if !allAccounts.isEmpty {
+                    Section {
+                        ForEach(allAccounts) { account in
+                            Button {
+                                if selectedAccountIds.contains(account.id) {
+                                    selectedAccountIds.remove(account.id)
+                                } else {
+                                    selectedAccountIds.insert(account.id)
+                                }
+                            } label: {
+                                HStack {
+                                    Image(
+                                        systemName: selectedAccountIds.contains(account.id) ?
+                                            "checkmark.square.fill" : "square",
+                                    )
+                                    .foregroundColor(
+                                        selectedAccountIds.contains(account.id) ? .accentColor : .secondary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(account.username)
+                                            .foregroundColor(.primary)
+                                        Text(account.brandEnum.displayName)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                }
+                                // The whole row toggles the filter, not just its text.
+                                .expandedTapTarget()
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    } header: {
+                        HStack {
+                            Text("Accounts")
+                            Spacer()
+                            Button {
+                                selectedAccountIds = Set(allAccounts.map(\.id))
+                            } label: {
+                                Text("All")
+                                    .expandedTapTarget()
+                            }
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                            Button {
+                                selectedAccountIds = []
+                            } label: {
+                                Text("None")
+                                    .expandedTapTarget()
+                            }
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Filter Logs")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}

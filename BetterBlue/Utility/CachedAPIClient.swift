@@ -1,0 +1,347 @@
+//
+//  CachedAPIClient.swift
+//  BetterBlue
+//
+//  A caching and request deduplication layer for API clients
+//
+
+import BetterBlueKit
+import Foundation
+
+@MainActor
+class CachedAPIClient: APIClientProtocol {
+    let underlyingClient: any APIClientProtocol
+
+    // Cache for storing responses with timestamps
+    private var cache: [CacheKey: CacheEntry] = [:]
+
+    // Track ongoing requests to prevent duplicates - using a protocol-based approach
+    private var ongoingRequests: [RequestKey: any OngoingRequest] = [:]
+
+    // Cache TTL in seconds
+    private let cacheTTL: TimeInterval = 5.0
+
+    init(underlyingClient: any APIClientProtocol) {
+        self.underlyingClient = underlyingClient
+    }
+
+    // MARK: - APIClientProtocol Implementation
+
+    func login() async throws -> AuthToken {
+        let requestKey = RequestKey.login
+        let cacheKey = CacheKey.login
+
+        // Check if we have a cached response that's still valid
+        if let cachedEntry = cache[cacheKey],
+           Date().timeIntervalSince(cachedEntry.timestamp) < cacheTTL,
+           let cachedToken = cachedEntry.response as? AuthToken {
+            BBLogger.debug(.api, "CachedAPIClient:Using cached login response")
+            return cachedToken
+        }
+
+        // Check if there's already an ongoing request of this type
+        if let ongoingRequest = ongoingRequests[requestKey] {
+            BBLogger.debug(.api, "CachedAPIClient:Waiting for ongoing login request")
+            guard let token = try await ongoingRequest.waitForCompletion() as? AuthToken else {
+                throw APIError.logError("Error retrieving login token from ongoing request")
+            }
+            return token
+        }
+
+        // Create new request task
+        let task = Task<AuthToken, any Error> {
+            defer {
+                ongoingRequests.removeValue(forKey: requestKey)
+            }
+
+            BBLogger.debug(.api, "CachedAPIClient:Performing new login request")
+            let result = try await underlyingClient.login()
+
+            // Cache successful response
+            cache[cacheKey] = CacheEntry(response: result, timestamp: Date())
+
+            return result
+        }
+
+        ongoingRequests[requestKey] = TypedOngoingRequest(task: task)
+        return try await task.value
+    }
+
+    func registerDevice() async throws -> String? {
+        BBLogger.debug(.api, "CachedAPIClient:Forwarding registerDevice request")
+        return try await underlyingClient.registerDevice()
+    }
+
+    func fetchVehicles(authToken: AuthToken) async throws -> [Vehicle] {
+        let requestKey = RequestKey.fetchVehicles
+        let cacheKey = CacheKey.fetchVehicles
+
+        // Check if we have a cached response that's still valid
+        if let cachedEntry = cache[cacheKey],
+           Date().timeIntervalSince(cachedEntry.timestamp) < cacheTTL,
+           let cachedVehicles = cachedEntry.response as? [Vehicle] {
+            BBLogger.debug(.api, "CachedAPIClient:Using cached fetchVehicles response")
+            return cachedVehicles
+        }
+
+        // Check if there's already an ongoing request of this type
+        if let ongoingRequest = ongoingRequests[requestKey] {
+            BBLogger.debug(.api, "CachedAPIClient:Waiting for ongoing fetchVehicles request")
+            guard let vehicles = try await ongoingRequest.waitForCompletion() as? [Vehicle] else {
+                throw APIError.logError("Error retrieving vehicles from ongoing request")
+            }
+            return vehicles
+        }
+
+        // Create new request task
+        let task = Task<[Vehicle], any Error> {
+            defer {
+                ongoingRequests.removeValue(forKey: requestKey)
+            }
+
+            BBLogger.debug(.api, "CachedAPIClient:Performing new fetchVehicles request")
+            let result = try await underlyingClient.fetchVehicles(authToken: authToken)
+
+            // Cache successful response
+            cache[cacheKey] = CacheEntry(response: result, timestamp: Date())
+
+            return result
+        }
+
+        ongoingRequests[requestKey] = TypedOngoingRequest(task: task)
+        return try await task.value
+    }
+
+    func fetchVehicleStatus(
+        for vehicle: Vehicle,
+        authToken: AuthToken,
+        cached: Bool
+    ) async throws -> VehicleStatus {
+        let requestKey = RequestKey.fetchVehicleStatus(vin: vehicle.vin)
+        let cacheKey = CacheKey.fetchVehicleStatus(vin: vehicle.vin)
+
+        // When the caller explicitly requests a real-time status (manual sync,
+        // post-command verification), skip the in-memory TTL cache — otherwise
+        // a recent widget refresh would swallow the user's request — and
+        // invalidate any stale entry so later callers also see fresh data.
+        if !cached {
+            cache.removeValue(forKey: cacheKey)
+        }
+
+        // Check if we have a cached response that's still valid
+        if cached,
+           let cachedEntry = cache[cacheKey],
+           Date().timeIntervalSince(cachedEntry.timestamp) < cacheTTL,
+           let cachedStatus = cachedEntry.response as? VehicleStatus {
+            BBLogger.debug(.api, "CachedAPIClient:Using cached fetchVehicleStatus response for VIN: \(vehicle.vin)")
+            return cachedStatus
+        }
+
+        // Check if there's already an ongoing request of this type. We still
+        // coalesce in-flight real-time requests: if two force-refresh taps
+        // fire, the second awaits the first rather than double-polling the
+        // vehicle modem.
+        if let ongoingRequest = ongoingRequests[requestKey] {
+            BBLogger.debug(.api, "CachedAPIClient:Waiting for ongoing fetchVehicleStatus request for VIN: \(vehicle.vin)")
+            guard let vehicleStatus = try await ongoingRequest.waitForCompletion() as? VehicleStatus else {
+                throw APIError.logError("Error retrieving vehicles from ongoing request")
+            }
+            return vehicleStatus
+        }
+
+        // Create new request task
+        let task = Task<VehicleStatus, any Error> {
+            defer {
+                ongoingRequests.removeValue(forKey: requestKey)
+            }
+
+            BBLogger.debug(
+                .api,
+                "CachedAPIClient:Performing new fetchVehicleStatus request for VIN: \(vehicle.vin) (cached: \(cached))"
+            )
+            let result = try await underlyingClient.fetchVehicleStatus(
+                for: vehicle,
+                authToken: authToken,
+                cached: cached
+            )
+
+            // Cache successful response
+            cache[cacheKey] = CacheEntry(response: result, timestamp: Date())
+
+            return result
+        }
+
+        ongoingRequests[requestKey] = TypedOngoingRequest(task: task)
+        return try await task.value
+    }
+
+    func sendCommand(for vehicle: Vehicle, command: VehicleCommand, authToken: AuthToken) async throws {
+        // Commands should not be cached or deduplicated as they perform actions
+        // However, we still want to prevent multiple identical commands from running simultaneously
+        let requestKey = RequestKey.sendCommand(vin: vehicle.vin, command: String(describing: command))
+
+        // Check if there's already an ongoing command of this type for this vehicle
+        if let ongoingRequest = ongoingRequests[requestKey] {
+            BBLogger.debug(.api, "CachedAPIClient:Waiting for ongoing sendCommand request for VIN: \(vehicle.vin)")
+            _ = try await ongoingRequest.waitForCompletion()
+            return
+        }
+
+        // Invalidate cached status for this vehicle before sending command
+        // This ensures subsequent fetches get fresh data reflecting the command's effect
+        invalidateStatusCache(for: vehicle.vin)
+
+        // Create new request task
+        let task = Task<Void, any Error> {
+            defer {
+                ongoingRequests.removeValue(forKey: requestKey)
+            }
+
+            BBLogger.debug(.api, "CachedAPIClient:Performing new sendCommand request for VIN: \(vehicle.vin)")
+            try await underlyingClient.sendCommand(for: vehicle, command: command, authToken: authToken)
+        }
+
+        ongoingRequests[requestKey] = TypedOngoingRequest(task: task)
+        try await task.value
+    }
+
+    func fetchEVTripSummary(for vehicle: Vehicle, authToken: AuthToken) async throws -> [EVTripSummary]? {
+        // Trip details are not cached - forward directly to underlying client
+        BBLogger.debug(.api, "CachedAPIClient:Forwarding fetchEVTripSummary request for VIN: \(vehicle.vin)")
+        return try await underlyingClient.fetchEVTripSummary(for: vehicle, authToken: authToken)
+    }
+
+    func fetchEVTripInfo(for vehicle: Vehicle, authToken: AuthToken, date: Date) async throws -> [EVTripInfo]? {
+        BBLogger.debug(.api, "CachedAPIClient:Forwarding fetchEVTripInfo request for VIN: \(vehicle.vin)")
+        return try await underlyingClient.fetchEVTripInfo(for: vehicle, authToken: authToken, date: date)
+    }
+
+    func requestSurroundViewCapture(for vehicle: Vehicle, authToken: AuthToken) async throws {
+        // Never cached or deduplicated: this is a user-initiated command
+        // that tells the vehicle to go take fresh photos.
+        BBLogger.debug(.api, "CachedAPIClient:Forwarding requestSurroundViewCapture for VIN: \(vehicle.vin)")
+        try await underlyingClient.requestSurroundViewCapture(for: vehicle, authToken: authToken)
+    }
+
+    func fetchSurroundViewImagery(
+        for capture: SurroundViewCapture,
+        vehicle: Vehicle,
+        authToken: AuthToken
+    ) async throws -> SurroundViewCapture {
+        // MUST be forwarded. The protocol's default returns the capture
+        // untouched, which is correct for a client whose listings already
+        // include imagery — but silently wrong here: inheriting it would
+        // make every on-demand load a no-op and leave the screen showing
+        // a permanently blank picture. The underlying client does its own
+        // per-svmId caching, so there is nothing to add at this layer.
+        BBLogger.debug(.api, "CachedAPIClient:Forwarding fetchSurroundViewImagery for VIN: \(vehicle.vin)")
+        return try await underlyingClient.fetchSurroundViewImagery(
+            for: capture,
+            vehicle: vehicle,
+            authToken: authToken
+        )
+    }
+
+    func fetchSurroundViewCaptures(
+        for vehicle: Vehicle,
+        authToken: AuthToken
+    ) async throws -> [SurroundViewCapture] {
+        // Not cached — the caller polls this waiting for the server to
+        // pick up a new capture, so a stale hit would defeat the point.
+        BBLogger.debug(.api, "CachedAPIClient:Forwarding fetchSurroundViewCaptures for VIN: \(vehicle.vin)")
+        return try await underlyingClient.fetchSurroundViewCaptures(for: vehicle, authToken: authToken)
+    }
+
+    func optionalFeaturesSupported() -> [OptionalAPIFeature] {
+        // Without this forward the protocol's default ([]) would answer for
+        // the wrapper, hiding MFA and trip history for every account.
+        underlyingClient.optionalFeaturesSupported()
+    }
+
+    /// Invalidates the cached status for a specific vehicle
+    func invalidateStatusCache(for vin: String) {
+        let cacheKey = CacheKey.fetchVehicleStatus(vin: vin)
+        if cache.removeValue(forKey: cacheKey) != nil {
+            BBLogger.debug(.api, "CachedAPIClient:Invalidated status cache for VIN: \(vin)")
+        }
+    }
+
+    // MARK: - Cache Management
+
+    func clearCache() {
+        cache.removeAll()
+        BBLogger.debug(.api, "CachedAPIClient:Cache cleared")
+    }
+
+    func clearExpiredCache() {
+        let now = Date()
+        let expiredKeys = cache.compactMap { key, entry in
+            now.timeIntervalSince(entry.timestamp) >= cacheTTL ? key : nil
+        }
+
+        for key in expiredKeys {
+            cache.removeValue(forKey: key)
+        }
+
+        if !expiredKeys.isEmpty {
+            BBLogger.debug(.api, "CachedAPIClient:Cleared \(expiredKeys.count) expired cache entries")
+        }
+    }
+
+    // Expose cache statistics for debugging
+    var cacheStatistics: CacheStatistics {
+        let now = Date()
+        let validEntries = cache.values.filter { now.timeIntervalSince($0.timestamp) < cacheTTL }
+        let expiredEntries = cache.values.filter { now.timeIntervalSince($0.timestamp) >= cacheTTL }
+
+        return CacheStatistics(
+            totalEntries: cache.count,
+            validEntries: validEntries.count,
+            expiredEntries: expiredEntries.count,
+            ongoingRequests: ongoingRequests.count,
+        )
+    }
+}
+
+// MARK: - Supporting Types
+
+private protocol OngoingRequest: Sendable {
+    func waitForCompletion() async throws -> Any
+}
+
+private struct TypedOngoingRequest<T: Sendable>: OngoingRequest {
+    let task: Task<T, any Error>
+
+    func waitForCompletion() async throws -> Any {
+        try await task.value
+    }
+}
+
+private struct CacheEntry {
+    let response: Any
+    let timestamp: Date
+}
+
+private enum CacheKey: Hashable {
+    case login
+    case fetchVehicles
+    case fetchVehicleStatus(vin: String)
+}
+
+private enum RequestKey: Hashable {
+    case login
+    case fetchVehicles
+    case fetchVehicleStatus(vin: String)
+    case sendCommand(vin: String, command: String)
+}
+
+struct CacheStatistics {
+    let totalEntries: Int
+    let validEntries: Int
+    let expiredEntries: Int
+    let ongoingRequests: Int
+
+    var description: String {
+        "Cache: \(validEntries) valid, \(expiredEntries) expired, \(ongoingRequests) ongoing"
+    }
+}

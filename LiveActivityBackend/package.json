@@ -1,0 +1,18 @@
+{
+  "name": "betterblue-live-activity",
+  "version": "1.0.0",
+  "description": "Live Activity backend for BetterBlue",
+  "main": "handler.js",
+  "dependencies": {
+    "@parse/node-apn": "^7.0.1",
+    "aws-sdk": "^2.1542.0"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dashboard": "node dashboard.js",
+    "dashboard:prod": "node dashboard.js --stage prod"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

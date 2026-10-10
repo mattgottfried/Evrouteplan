@@ -1,0 +1,706 @@
+//
+//  Vehicle.swift
+//  BetterBlue
+//
+//  Created by Mark Schmidt on 9/6/25.
+//
+
+import BetterBlueKit
+import Foundation
+import SwiftData
+import SwiftUI
+
+/// User preference for charge port type (affects DC plug icon display)
+enum ChargePortType: String, Codable, CaseIterable {
+    case ccs1 = "CCS1"
+    case ccs2 = "CCS2"
+    case nacs = "NACS"
+
+    var displayName: String {
+        rawValue
+    }
+
+    var dcPlugIcon: String {
+        switch self {
+        case .ccs1: return "ev.plug.dc.ccs1"
+        case .ccs2: return "ev.plug.dc.ccs2"
+        case .nacs: return "ev.plug.dc.nacs"
+        }
+    }
+
+    var acPlugIcon: String {
+        switch self {
+        case .ccs1: return "ev.plug.ac.type.1"
+        case .ccs2: return "ev.plug.ac.type.2"
+        case .nacs: return "ev.plug.dc.nacs"
+        }
+    }
+}
+
+@Model
+class BBVehicle {
+    var id: UUID = UUID()
+    var vin: String = ""
+
+    // Vehicle fields (all required)
+    var regId: String = ""
+    var model: String = ""
+    var accountId: UUID = UUID()
+    var fuelTypeRaw: String = FuelType.gas.rawValue
+    var generation: Int = 0
+    var odometer: Distance = Distance(length: 0, units: .miles)
+    /// Model year, where the API reports one (Hyundai Canada does).
+    /// Canada's HVAC temperature scale changed with MY2020, so the kit's
+    /// climate codec needs this threaded through every `toVehicle()` —
+    /// dropping it here regresses MY2020+ cars onto the wrong scale.
+    var modelYear: Int?
+
+    // VehicleStatus fields (all optional since status might not be fetched)
+    var lastUpdated: Date?
+    var syncDate: Date?
+    var gasRange: VehicleStatus.FuelRange?
+    var evStatus: VehicleStatus.EVStatus?
+    var location: VehicleStatus.Location?
+    var lockStatus: VehicleStatus.LockStatus?
+    var climateStatus: VehicleStatus.ClimateStatus?
+
+    // Additional status fields
+    var battery12V: Int?
+    var doorOpen: VehicleStatus.DoorStatus?
+    var trunkOpen: Bool?
+    var hoodOpen: Bool?
+    var tirePressureWarning: VehicleStatus.TirePressureWarning?
+    /// Accessory power. True whenever the vehicle is "on" — the engine
+    /// running in an ICE car, or the high-voltage system live in an EV —
+    /// which makes it the one on/off signal that covers both powertrains.
+    var accessoryOn: Bool?
+
+    // Custom name and visibility (kept separate for easier queries)
+    var customName: String?
+    var isHidden: Bool = false
+    var sortOrder: Int = 0
+    /// Per-vehicle override for the Surround View menu item: nil follows
+    /// the automatic per-generation default, `true`/`false` force it shown
+    /// or hidden. Optional so CloudKit accepts the added column and so
+    /// every existing vehicle defaults to automatic. Not part of the debug
+    /// export — it's a local display preference, and it syncs via CloudKit
+    /// like the rest of the model.
+    var surroundViewOverride: Bool?
+    /// Legacy widget background. No longer user-editable in-app (the
+    /// widget background is now set on the widget itself); retained only
+    /// so the widget's "Vehicle Setting" option and existing rows keep
+    /// resolving. New vehicles stay on "default" (adaptive on the widget).
+    var backgroundColorName: String = "default"
+    var watchBackgroundColorName: String = "charcoal"
+    var chargePortTypeRaw: String = ChargePortType.ccs1.rawValue
+    var debugConfiguration: BBDebugConfiguration?
+    var debugLiveActivity: Bool = false
+
+    /// Override to show seat heat controls on older vehicles (generation < 3)
+    /// Ignored for generation 3+ vehicles where seat heat controls are always shown
+    var enableSeatHeatControls: Bool = false
+
+    /// Per-vehicle toggle for the climate duration picker. `nil` = use
+    /// the regional default (non-USA shows the picker, USA hides it
+    /// because the API ignores the duration field there); `true`/
+    /// `false` pin the visibility regardless of region. Lives next to
+    /// `enableSeatHeatControls` because both are "I know my car better
+    /// than the heuristic" overrides.
+    var showClimateDurationOverride: Bool?
+
+    // MARK: - Per-vehicle accent colors
+    //
+    // All five default to `nil` so old SwiftData rows decode without a
+    // migration; the resolver in `CustomColors.color(forName:default:)`
+    // returns a sensible default whenever the stored name is missing.
+    // Stored as String (palette name) instead of Color because SwiftUI
+    // `Color` isn't natively persistable.
+
+    /// Refresh button + map pin tint. Default: blue.
+    var primaryColorName: String?
+    /// Charging bolt + "Stop Charge" button color. Default: green.
+    /// Also used as the general EV indicator color on the sheet's
+    /// EV range row.
+    var chargingColorName: String?
+    /// Gas tank indicator color on the sheet's gas range row.
+    /// Default: orange.
+    var gasColorName: String?
+    /// Color shown when the vehicle is locked (status icon + tap-to-lock
+    /// quick action). Default: red.
+    var lockColorName: String?
+    /// Color shown when the vehicle is unlocked (status icon +
+    /// tap-to-unlock quick action). Default: green.
+    var unlockColorName: String?
+    /// Climate quick-action button + "Stop Climate" status color.
+    /// Default: blue.
+    var startClimateColorName: String?
+    /// Color used by the "Stop" quick-action buttons (stop charging,
+    /// stop climate) when the corresponding action is currently
+    /// running. Default: red — chosen so the button reads as
+    /// "actionable destructive" rather than greyed-out / disabled.
+    var stopColorName: String?
+
+    // MARK: - Fuel-type override
+    //
+    // The Kia/Hyundai vehicle-list endpoints don't always return a
+    // reliable powertrain marker (Kia USA in particular only confirms
+    // `fuelType` 4 as EV and 7 as PHEV; everything else falls into
+    // `.gas`). The self-heal in `updateStatus` infers the real type from
+    // the status payload's shape, but a payload can still be misread —
+    // e.g. issues #41 / #107, where the EV9's `fuelLevel: 0` parsed as a
+    // phantom 0% `gasRange` (length matching the EV range) and promoted
+    // the EV to PHEV.
+    //
+    // This stored override lets the user pin the powertrain manually.
+    // `nil` = trust the inferred value (default behaviour).
+    var fuelTypeOverrideRaw: String?
+
+    var chargePortType: ChargePortType {
+        get { ChargePortType(rawValue: chargePortTypeRaw) ?? .ccs1 }
+        set { chargePortTypeRaw = newValue.rawValue }
+    }
+
+    /// Whether this vehicle is assumed to have surround-view hardware,
+    /// absent a user override. Surround view is a newer-generation
+    /// feature, so gate on generation: gen1/gen2 vehicles don't have it,
+    /// while gen3+ — and an unknown generation, which we don't want to
+    /// hide on a guess — are assumed to. A real per-vehicle flag exists on
+    /// Kia (`locationFeature.surroundView`); reading it to tighten this is
+    /// a follow-up.
+    var autoShowsSurroundView: Bool {
+        generation == 0 || generation >= 3
+    }
+
+    /// The effective per-vehicle preference: the user's override when
+    /// they've set one, otherwise the automatic default.
+    ///
+    /// Deliberately ignores whether the account's API implements surround
+    /// view at all — that's a separate question, and keeping them apart is
+    /// what lets the settings toggle read back what it wrote. Mirrors the
+    /// shape of `showClimateDuration`.
+    var surroundViewEnabled: Bool {
+        surroundViewOverride ?? autoShowsSurroundView
+    }
+
+    /// Whether to surface surround view for this vehicle. The account's API
+    /// must implement it at all; then the per-vehicle preference decides.
+    @MainActor
+    var showsSurroundView: Bool {
+        guard account?.supportsSurroundView == true else { return false }
+        return surroundViewEnabled
+    }
+
+    /// User override for the inferred powertrain. `nil` means "use
+    /// whatever the API/self-heal decided". Setting it to a non-nil
+    /// value pins `fuelType` to that choice; clearing it (set to nil)
+    /// returns control to the inferred value.
+    var fuelTypeOverride: FuelType? {
+        get {
+            guard let raw = fuelTypeOverrideRaw else { return nil }
+            return FuelType(rawValue: raw)
+        }
+        set { fuelTypeOverrideRaw = newValue?.rawValue }
+    }
+
+    /// Effective "show climate duration picker" decision. Reads the
+    /// override when pinned, otherwise infers from generation + region:
+    /// generation-3+ vehicles honor the duration field globally, and
+    /// non-USA vehicles of any generation also honor it. Pre-gen-3 USA
+    /// vehicles default off because the API ignores duration there.
+    /// Account is optional because newly-created vehicles may not be
+    /// wired up yet; treat the absent case as "show" to match the more
+    /// common default outside the USA.
+    var showClimateDuration: Bool {
+        if let override = showClimateDurationOverride { return override }
+        if generation >= 3 { return true }
+        return account?.regionEnum != .usa
+    }
+
+    /// Powertrain that the rest of the app should use. Reads the
+    /// override when the user has pinned one, otherwise falls back to
+    /// the self-healed `fuelTypeRaw`. The setter still writes to
+    /// `fuelTypeRaw` so the inferred value continues to track API
+    /// hints — clearing the override later just reveals whatever the
+    /// inference has converged on.
+    var fuelType: FuelType {
+        get {
+            if let override = fuelTypeOverride { return override }
+            return FuelType(rawValue: fuelTypeRaw) ?? .gas
+        }
+        set { fuelTypeRaw = newValue.rawValue }
+    }
+
+    var maybeMarketOptions: VehicleMarketOptions? = nil
+    var marketOptions: VehicleMarketOptions { maybeMarketOptions ?? .generic }
+
+    // Optional vehicle key for Kia vehicles
+    @Transient var vehicleKey: String?
+
+    @Relationship(inverse: \BBAccount.vehicles) var account: BBAccount?
+    @Relationship(deleteRule: .cascade) var climatePresets: [ClimatePreset]? = []
+
+    var safeClimatePresets: [ClimatePreset] {
+        climatePresets ?? []
+    }
+
+    init(from vehicle: Vehicle, backgroundColorName: String? = nil) {
+        id = UUID()
+        vin = vehicle.vin
+        regId = vehicle.regId
+        model = vehicle.model
+        accountId = vehicle.accountId
+        fuelType = vehicle.fuelType
+        generation = vehicle.generation
+        odometer = vehicle.odometer
+        modelYear = vehicle.modelYear
+        maybeMarketOptions = vehicle.marketOptions
+
+        // Initialize status fields as nil
+        lastUpdated = nil
+        syncDate = nil
+        gasRange = nil
+        evStatus = nil
+        location = nil
+        lockStatus = nil
+        climateStatus = nil
+        battery12V = nil
+        doorOpen = nil
+        trunkOpen = nil
+        hoodOpen = nil
+        tirePressureWarning = nil
+
+        customName = nil
+        isHidden = false
+        vehicleKey = vehicle.vehicleKey
+        if let color = backgroundColorName {
+            self.backgroundColorName = color
+        }
+    }
+}
+
+// MARK: - Status Management
+
+extension BBVehicle {
+    /// Apply the off-axis-range cleanup that follows from a fuel-type
+    /// override change. Call after the user picks a new override (or
+    /// clears it). `updateStatus` already gates writes on the effective
+    /// `fuelType`, but stale `gasRange`/`evStatus` set BEFORE the
+    /// override was applied won't go away on their own — this method
+    /// nukes the irrelevant fields up-front so the UI updates without
+    /// waiting for the next status fetch.
+    @MainActor
+    func normalizeRangesForCurrentFuelType() {
+        switch fuelType {
+        case .gas:
+            evStatus = nil
+        case .electric:
+            gasRange = nil
+        case .phev:
+            // PHEV legitimately keeps both — nothing to clear.
+            break
+        }
+    }
+
+    /// Returns true when `to` is more specific than `from` along the
+    /// `gas → electric → phev` axis. Used by `updateStatus` to one-way
+    /// upgrade a misclassified `fuelType` once a status payload reveals
+    /// the real powertrain — without ever demoting (e.g. a PHEV momentarily
+    /// returning evStatus only shouldn't flip back to electric).
+    fileprivate func isFuelTypeUpgrade(from: FuelType, to: FuelType) -> Bool {
+        switch (from, to) {
+        case (.gas, .electric), (.gas, .phev), (.electric, .phev):
+            return true
+        default:
+            return false
+        }
+    }
+
+    @MainActor
+    func updateStatus(with status: VehicleStatus) {
+        // Wake up any waiting status change tasks (cancel them so they can restart immediately)
+        wakeUpStatusWaiters()
+
+        // Update all fields with the merged status
+        lastUpdated = status.lastUpdated
+        syncDate = status.syncDate
+
+        // ----- Self-heal `fuelType` from status payload shape -----
+        //
+        // Borrowed from `hyundai_kia_connect_api`'s `KiaUvoApiUSA`
+        // `_update_vehicle_properties`: when the vehicles-list parser
+        // can't authoritatively classify the powertrain (Kia USA only
+        // confirms `fuelType` 4 as EV and 7 as PHEV; everything else
+        // falls into `.gas` as a conservative default), the status
+        // response's structure is the source of truth.
+        //
+        //   - `evStatus` present                ⇒ has a high-voltage battery
+        //   - `evStatus` + `gasRange` present   ⇒ PHEV
+        //   - `evStatus` only                   ⇒ pure EV
+        //   - `gasRange` only                   ⇒ pure ICE
+        //
+        // We only ever UPGRADE specificity (gas → electric → phev) so
+        // a one-off missing field in a status response can't demote a
+        // vehicle we already know is a PHEV back to electric or gas.
+        let inferredType: FuelType?
+        switch (status.evStatus, status.gasRange) {
+        case (.some, .some): inferredType = .phev
+        case (.some, .none): inferredType = .electric
+        case (.none, .some): inferredType = .gas
+        case (.none, .none): inferredType = nil
+        }
+        if let inferredType, isFuelTypeUpgrade(from: fuelType, to: inferredType) {
+            BBLogger.info(
+                .api,
+                "BBVehicle: self-heal fuelType \(fuelType.rawValue) → \(inferredType.rawValue) for VIN \(vin) based on status payload shape"
+            )
+            fuelType = inferredType
+        }
+
+        // Update gas range and EV status, keeping existing values if new ones aren't provided.
+        // PHEVs can have both gasRange and evStatus simultaneously.
+        if [.gas, .phev].contains(fuelType), let gasRange = status.gasRange {
+            self.gasRange = gasRange
+        }
+        if [.electric, .phev].contains(fuelType), let evStatus = status.evStatus {
+            self.evStatus = evStatus
+        }
+        // Only clear gas range for pure EVs (PHEVs retain both gas and EV range)
+        if fuelType == .electric && status.evStatus != nil && status.gasRange == nil {
+            self.gasRange = nil
+        }
+        if fuelType == .gas && status.evStatus == nil && status.gasRange != nil {
+            self.evStatus = nil
+        }
+        
+        location = status.location
+        lockStatus = status.lockStatus
+        climateStatus = status.climateStatus
+        if let odometer = status.odometer {
+            self.odometer = odometer
+        }
+
+        // Update additional status fields
+        battery12V = status.battery12V
+        doorOpen = status.doorOpen
+        trunkOpen = status.trunkOpen
+        hoodOpen = status.hoodOpen
+        accessoryOn = status.accessoryOn
+        tirePressureWarning = status.tirePressureWarning
+    }
+
+    // MARK: - Status Change Waiting
+
+    // Simple actor to manage wake-up continuations
+    private actor StatusWaitingManager {
+        private var wakeUpContinuations: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+        func setWakeUpContinuation(
+            for vehicleId: UUID,
+            continuation: CheckedContinuation<Void, Never>,
+        ) {
+            wakeUpContinuations[vehicleId] = continuation
+        }
+
+        func wakeUp(vehicleId: UUID) -> Bool {
+            if let continuation = wakeUpContinuations.removeValue(forKey: vehicleId) {
+                continuation.resume()
+                return true
+            }
+            return false
+        }
+
+        func clearWakeUp(for vehicleId: UUID) {
+            if let continuation = wakeUpContinuations.removeValue(forKey: vehicleId) {
+                // Resume the continuation to prevent leak
+                continuation.resume()
+            }
+        }
+    }
+
+    private static let statusWaitingManager = StatusWaitingManager()
+
+    @MainActor
+    func waitForStatusChange(
+        modelContext: ModelContext,
+        condition: @escaping @Sendable (VehicleStatus) -> Bool,
+        statusMessageUpdater: (@Sendable (String) -> Void)? = nil,
+        maxAttempts: Int = 3,
+        initialDelaySeconds: Int = 10,
+        retryDelaySeconds: Int = 10,
+    ) async throws {
+        // Initial delay to allow command to process
+        statusMessageUpdater?("Command sent")
+        try await interruptibleSleep(seconds: initialDelaySeconds)
+
+        var currentAttempt = 0
+
+        while currentAttempt < maxAttempts {
+            try Task.checkCancellation()
+
+            guard let account else {
+                throw APIError(message: "Account not found for vehicle")
+            }
+
+            // Post-command verification needs to reflect the vehicle's
+            // actual state, not the backend's cached snapshot.
+            do {
+                let updatedStatus = try await account.fetchVehicleStatus(
+                    for: self,
+                    modelContext: modelContext,
+                    cached: false
+                )
+
+                // Update the vehicle's status
+                updateStatus(with: updatedStatus)
+
+                if condition(updatedStatus) {
+                    print(
+                        "✅ [BBVehicle] Status condition met for vehicle \(displayName)",
+                    )
+                    return
+                }
+            } catch let error as APIError where Self.isTransientPollingError(error) {
+                // The command was already accepted — a transient failure on
+                // the verification fetch (e.g. Hyundai US answering 502
+                // "previous request is pending" while the vehicle is still
+                // busy with the command itself) isn't a command failure.
+                // Count it as an attempt and keep polling.
+                print(
+                    "⚠️ [BBVehicle] Transient error polling status for \(displayName), will retry: \(error.message)",
+                )
+            }
+
+            currentAttempt += 1
+            if currentAttempt < maxAttempts {
+                statusMessageUpdater?(
+                    "Waiting for vehicle (\(currentAttempt)/\(maxAttempts))"
+                )
+                try await interruptibleSleep(seconds: retryDelaySeconds)
+            }
+        }
+
+        // Distinct error type: the command was already accepted upstream —
+        // only the confirmation polling timed out. UIs render this as a
+        // soft "awaiting confirmation" state, not a failure (issue #83).
+        throw APIError(
+            message: "The command was sent, but the vehicle hasn't confirmed the change yet. "
+                + "It may still complete — refresh in a minute to check.",
+            errorType: .statusVerificationTimeout
+        )
+    }
+
+    /// Errors that shouldn't abort post-command polling: the backend is
+    /// busy or briefly unavailable, and the next attempt may well succeed.
+    private static func isTransientPollingError(_ error: APIError) -> Bool {
+        switch error.errorType {
+        case .serverError, .concurrentRequest:
+            true
+        default:
+            false
+        }
+    }
+
+    @MainActor
+    private func interruptibleSleep(seconds: Int) async throws {
+        let vehicleId = id
+
+        // Ensure any existing continuation is cleared before setting up a new one
+        await Self.statusWaitingManager.clearWakeUp(for: vehicleId)
+
+        try await withThrowingTaskGroup(of: Bool.self) { group in
+            // Add timer task
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds) * 1_000_000_000)
+                return false // Timer completed normally
+            }
+
+            // Add wake-up task
+            group.addTask {
+                await withCheckedContinuation { continuation in
+                    Task {
+                        await Self.statusWaitingManager.setWakeUpContinuation(
+                            for: vehicleId,
+                            continuation: continuation,
+                        )
+                    }
+                }
+                return true // Wake-up was triggered
+            }
+
+            // Wait for the first task to complete
+            let wasWakeUp = try await group.next() ?? false
+
+            // Cancel remaining tasks and ensure continuation cleanup
+            group.cancelAll()
+            await Self.statusWaitingManager.clearWakeUp(for: vehicleId)
+
+            if wasWakeUp {
+                print(
+                    "⏰ [BBVehicle] Sleep interrupted by wake-up for vehicle \(self.displayName)",
+                )
+            }
+        }
+    }
+
+    @MainActor
+    func wakeUpStatusWaiters() {
+        Task {
+            let wasAwakened = await Self.statusWaitingManager.wakeUp(
+                vehicleId: self.id,
+            )
+            if wasAwakened {
+                print(
+                    "🔔 [BBVehicle] Waking up status waiter for vehicle \(self.displayName)",
+                )
+            }
+        }
+    }
+
+    @MainActor
+    func clearPendingStatusWaiters() async {
+        await Self.statusWaitingManager.clearWakeUp(for: id)
+        print(
+            "🧹 [BBVehicle] Cleared pending status waiters for vehicle \(displayName)",
+        )
+    }
+}
+
+// MARK: - UI and Display
+
+extension BBVehicle {
+    var displayName: String {
+        customName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ?
+            customName! : model
+    }
+
+    // MARK: - Per-vehicle accent colors (resolved)
+
+    /// Refresh button + map pin tint.
+    var primaryColor: Color {
+        CustomColor.color(forName: primaryColorName, default: "blue")
+    }
+
+    /// Bolt icon when initiating charge / "Stop Charge" button.
+    /// Also used as the general EV indicator color on the sheet.
+    var chargingColor: Color {
+        CustomColor.color(forName: chargingColorName, default: "green")
+    }
+
+    /// Fuelpump icon + bar tint on the sheet's gas range row.
+    var gasColor: Color {
+        CustomColor.color(forName: gasColorName, default: "orange")
+    }
+
+    /// Color shown when the vehicle is locked.
+    var lockColor: Color {
+        CustomColor.color(forName: lockColorName, default: "red")
+    }
+
+    /// Color shown when the vehicle is unlocked.
+    var unlockColor: Color {
+        CustomColor.color(forName: unlockColorName, default: "green")
+    }
+
+    /// Climate start action color.
+    var startClimateColor: Color {
+        CustomColor.color(forName: startClimateColorName, default: "blue")
+    }
+
+    /// Color for "Stop" buttons in active states (stop charging,
+    /// stop climate). Default: red.
+    var stopColor: Color {
+        CustomColor.color(forName: stopColorName, default: "red")
+    }
+
+    /// Returns the appropriate plug icon based on current charging state and user's port type preference
+    func plugIcon(for plugType: VehicleStatus.PlugType?) -> Image {
+        guard let plugType else {
+            return Image("custom.powerplug.portrait.slash")
+        }
+
+        switch plugType {
+        case .unplugged:
+            return Image("custom.powerplug.portrait.slash")
+        case .acCharger:
+            return Image(systemName: chargePortType.acPlugIcon)
+        case .dcCharger:
+            return Image(systemName: chargePortType.dcPlugIcon)
+        }
+    }
+}
+
+// MARK: - Codable Conformance for Export
+
+extension BBVehicle: Encodable {
+    enum CodingKeys: String, CodingKey {
+        case id, vin, regId, model, accountId, fuelTypeRaw, generation, odometer, marketOptions
+        case lastUpdated, syncDate, gasRange, evStatus, location, lockStatus, climateStatus
+        case battery12V, doorOpen, trunkOpen, hoodOpen, accessoryOn, tirePressureWarning
+        case customName, isHidden, sortOrder, backgroundColorName, watchBackgroundColorName
+        case chargePortTypeRaw, debugConfiguration, debugLiveActivity, enableSeatHeatControls
+        case primaryColorName, chargingColorName, gasColorName, lockColorName, unlockColorName, startClimateColorName
+        case stopColorName
+        case fuelTypeOverrideRaw
+        case showClimateDurationOverride
+        case climatePresets
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        // Core vehicle fields
+        try container.encode(id, forKey: .id)
+        try container.encode(vin, forKey: .vin)
+        try container.encode(regId, forKey: .regId)
+        try container.encode(model, forKey: .model)
+        try container.encode(accountId, forKey: .accountId)
+        try container.encode(fuelTypeRaw, forKey: .fuelTypeRaw)
+        try container.encode(generation, forKey: .generation)
+        try container.encode(odometer, forKey: .odometer)
+        try container.encode(marketOptions, forKey: .marketOptions)
+
+        // Status fields
+        try container.encodeIfPresent(lastUpdated, forKey: .lastUpdated)
+        try container.encodeIfPresent(syncDate, forKey: .syncDate)
+        try container.encodeIfPresent(gasRange, forKey: .gasRange)
+        try container.encodeIfPresent(evStatus, forKey: .evStatus)
+        try container.encodeIfPresent(location, forKey: .location)
+        try container.encodeIfPresent(lockStatus, forKey: .lockStatus)
+        try container.encodeIfPresent(climateStatus, forKey: .climateStatus)
+        try container.encodeIfPresent(battery12V, forKey: .battery12V)
+        try container.encodeIfPresent(doorOpen, forKey: .doorOpen)
+        try container.encodeIfPresent(trunkOpen, forKey: .trunkOpen)
+        try container.encodeIfPresent(hoodOpen, forKey: .hoodOpen)
+        try container.encodeIfPresent(accessoryOn, forKey: .accessoryOn)
+        try container.encodeIfPresent(tirePressureWarning, forKey: .tirePressureWarning)
+
+        // UI/Settings fields
+        try container.encodeIfPresent(customName, forKey: .customName)
+        try container.encode(isHidden, forKey: .isHidden)
+        try container.encode(sortOrder, forKey: .sortOrder)
+        try container.encode(backgroundColorName, forKey: .backgroundColorName)
+        try container.encode(watchBackgroundColorName, forKey: .watchBackgroundColorName)
+        try container.encode(chargePortTypeRaw, forKey: .chargePortTypeRaw)
+        try container.encodeIfPresent(debugConfiguration, forKey: .debugConfiguration)
+        try container.encode(debugLiveActivity, forKey: .debugLiveActivity)
+        try container.encode(enableSeatHeatControls, forKey: .enableSeatHeatControls)
+
+        // Per-vehicle accent colors
+        try container.encodeIfPresent(primaryColorName, forKey: .primaryColorName)
+        try container.encodeIfPresent(chargingColorName, forKey: .chargingColorName)
+        try container.encodeIfPresent(gasColorName, forKey: .gasColorName)
+        try container.encodeIfPresent(lockColorName, forKey: .lockColorName)
+        try container.encodeIfPresent(unlockColorName, forKey: .unlockColorName)
+        try container.encodeIfPresent(startClimateColorName, forKey: .startClimateColorName)
+        try container.encodeIfPresent(stopColorName, forKey: .stopColorName)
+
+        // Fuel-type override (nil = inferred). Useful in debug exports
+        // for diagnosing reports like #41 where the inferred type is
+        // wrong and the user has pinned it manually.
+        try container.encodeIfPresent(fuelTypeOverrideRaw, forKey: .fuelTypeOverrideRaw)
+        try container.encodeIfPresent(showClimateDurationOverride, forKey: .showClimateDurationOverride)
+
+        // Climate presets (relationship)
+        try container.encode(safeClimatePresets, forKey: .climatePresets)
+    }
+}
